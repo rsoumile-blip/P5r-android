@@ -1,0 +1,425 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Launcher UI</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,500;0,600;0,700;1,700;1,800&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --red:#e8101f; --red-d:#8a0a14; --ink:#0b0708; --panel:rgba(14,8,10,.88);
+    --yellow:#ffe500; --white:#fff; --dim:#b9a9ab;
+    --font:"Barlow Condensed","Arial Narrow",Impact,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%;background:#000;overflow:hidden;font-family:var(--font);color:#fff;-webkit-tap-highlight-color:transparent;user-select:none}
+
+  /* Fixed 1708x768 design canvas, scaled to fit any screen (set by JS) */
+  #stage{position:absolute;left:50%;top:50%;width:1708px;height:768px;transform-origin:0 0;overflow:hidden;
+    background:
+      radial-gradient(ellipse at 70% 40%,rgba(255,40,50,.28),transparent 60%),
+      linear-gradient(115deg,#3a0509 0%,#5c0710 45%,#2b0307 100%);}
+  /* background shapes */
+  #stage::before{content:"";position:absolute;inset:0;
+    background:
+      repeating-linear-gradient(115deg,rgba(0,0,0,.0) 0 90px,rgba(0,0,0,.18) 90px 94px),
+      conic-gradient(from 200deg at 78% 55%,transparent 0 20deg,rgba(0,0,0,.35) 20deg 40deg,transparent 40deg 120deg,rgba(0,0,0,.28) 120deg 150deg,transparent 150deg);
+    animation:drift 18s linear infinite alternate;opacity:.9}
+  @keyframes drift{to{transform:translate3d(-30px,12px,0) scale(1.04)}}
+
+  /* ---------- Sidebar ---------- */
+  #side{position:absolute;left:0;top:0;width:545px;height:100%;background:var(--ink);
+    clip-path:polygon(0 0,100% 0,88% 100%,0 100%);z-index:2}
+  #sideEdge{position:absolute;left:0;top:0;width:560px;height:100%;background:var(--red);
+    clip-path:polygon(0 0,100% 0,88.6% 100%,0 100%);z-index:1}
+  #sideEdge::after{content:"";position:absolute;inset:0;background:#fff;clip-path:polygon(97.5% 0,98.5% 0,87.4% 100%,86.4% 100%);opacity:.9}
+
+  #brand{position:absolute;left:112px;top:34px;z-index:3;transform:rotate(-2deg)}
+  #brand .tiles{display:flex;gap:4px}
+  #brand .tiles span{display:grid;place-items:center;width:42px;height:52px;font-weight:800;font-size:40px;
+    background:#fff;color:#000;box-shadow:4px 4px 0 var(--red);}
+  #brand .tiles span:nth-child(odd){background:#000;color:#fff;box-shadow:4px 4px 0 var(--red);outline:2px solid #fff}
+  #brand .tiles span:nth-child(3n){transform:rotate(-5deg)}
+  #brand .tiles span:nth-child(3n+1){transform:rotate(4deg) translateY(2px)}
+  #brand .tag{margin:12px 0 0 6px;display:inline-block;background:var(--red);padding:0 14px;font-size:22px;font-weight:700;letter-spacing:.35em;font-style:italic;
+    clip-path:polygon(8% 0,100% 0,92% 100%,0 100%)}
+
+  #nav{position:absolute;left:112px;top:178px;width:400px;z-index:3;display:flex;flex-direction:column;gap:22px}
+  .nav-item{position:relative;height:66px;display:flex;align-items:center;padding:0 40px 0 36px;
+    background:linear-gradient(90deg,#141012,#0c0809);border-left:10px solid var(--red);
+    font-size:32px;font-weight:700;font-style:italic;text-transform:uppercase;letter-spacing:.01em;cursor:pointer;
+    transition:transform .18s cubic-bezier(.2,.9,.3,1.3),background .15s,color .15s}
+  .nav-item .n{position:absolute;right:20px;top:50%;transform:translateY(-50%);font-size:20px;color:#7d7173}
+  .nav-item.active{background:#fff;color:#000;border-left-color:transparent;transform:translateX(22px) skewX(-9deg);
+    width:410px;box-shadow:-8px 0 0 var(--red),0 6px 0 rgba(0,0,0,.4)}
+  .nav-item.active .lbl{display:inline-block;transform:skewX(9deg)}
+  .nav-item.active .n{color:var(--red);transform:translateY(-50%) skewX(9deg)}
+  .nav-item:not(.active):hover{transform:translateX(8px)}
+
+  #play{position:absolute;left:104px;top:612px;width:385px;height:78px;z-index:3;background:var(--red);cursor:pointer;
+    clip-path:polygon(7% 0,100% 0,93% 100%,0 100%);display:flex;align-items:center;justify-content:center;gap:18px;
+    font-size:38px;font-weight:800;font-style:italic;letter-spacing:.02em;border:0;color:#fff;font-family:var(--font);
+    transition:transform .12s,filter .12s}
+  #play::before{content:"";position:absolute;left:0;top:0;bottom:0;width:11%;background:#fff;opacity:.9;clip-path:polygon(40% 0,100% 0,60% 100%,0 100%);margin-left:6px}
+  #play:hover{filter:brightness(1.12);transform:translateX(4px)}
+  #play:active{transform:scale(.97)}
+  #ver{position:absolute;left:118px;top:718px;z-index:3;font-size:20px;color:#9a8d8f;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:17px}
+
+  /* ---------- Content ---------- */
+  #content{position:absolute;left:638px;top:0;right:48px;height:100%;z-index:2}
+  #head{position:absolute;left:0;right:0;top:36px;height:74px;border-bottom:3px solid #fff;display:flex;align-items:flex-start;justify-content:space-between}
+  #title{position:relative;padding-left:30px;font-size:54px;font-weight:800;font-style:italic;text-transform:uppercase;line-height:1;margin-top:2px}
+  #title::before{content:"";position:absolute;left:0;top:-4px;bottom:-4px;width:10px;background:var(--red);transform:skewX(-9deg);box-shadow:3px 0 0 #fff3}
+  #tabs{display:flex;align-items:center;gap:10px;margin-top:6px}
+  .kbadge{min-width:38px;height:38px;display:grid;place-items:center;font-weight:800;font-size:18px;padding:0 6px;background:var(--yellow);color:#000;border-radius:3px}
+  .kbadge.dim{background:#6a5f61;color:#222}
+  .tab{height:44px;padding:0 20px;display:grid;place-items:center;background:#1b1214;border:1px solid #fff2;font-size:23px;font-weight:700;text-transform:uppercase;color:#e9dcdd;
+    cursor:pointer;transform:skewX(-9deg);transition:all .15s}
+  .tab>span{display:block;transform:skewX(9deg)}
+  .tab.active{background:#fff;color:#000;border-color:var(--red);box-shadow:0 0 0 3px var(--red)}
+  .tab:hover:not(.active){background:#2a1b1e}
+
+  #list{position:absolute;left:0;right:0;top:128px;height:548px;overflow-y:auto;overflow-x:hidden;padding:6px 18px 6px 0;scrollbar-width:none;scroll-behavior:smooth}
+  #list::-webkit-scrollbar{display:none}
+  #scrollbar{position:absolute;right:0;top:134px;width:6px;height:536px;background:#ffffff14;border-radius:3px}
+  #scrollbar i{position:absolute;left:0;right:0;background:#ffffff66;border-radius:3px;top:0;height:40%}
+
+  .row{position:relative;display:flex;align-items:center;justify-content:space-between;gap:20px;min-height:104px;margin-bottom:18px;padding:12px 18px 12px 34px;
+    background:linear-gradient(90deg,rgba(16,9,11,.92),rgba(24,11,14,.86));
+    border-top:2px solid #ff3a4a33;border-bottom:2px solid #ff3a4a33;border-right:2px solid #ff3a4a22;border-left:2px solid #ff3a4a55;
+    animation:rowIn .35s both cubic-bezier(.2,.9,.3,1)}
+  @keyframes rowIn{from{opacity:0;transform:translateX(40px) skewX(-6deg)}to{opacity:1;transform:none}}
+  .row.focus{outline:4px solid var(--yellow);outline-offset:-2px;background:linear-gradient(90deg,rgba(30,16,8,.96),rgba(40,16,16,.9))}
+  .row.focus::before{content:"";position:absolute;left:8px;top:50%;margin-top:-9px;border:9px solid transparent;border-left:13px solid var(--yellow);border-right:0}
+  .info{min-width:0;flex:1}
+  .info h3{font-size:30px;font-weight:700;line-height:1.05}
+  .info p{font-size:21px;line-height:1.15;color:#e4d6d8;margin-top:6px;font-weight:500;max-width:560px}
+
+  .seg{display:flex;flex:none;background:#0d0a0b;border:1px solid #fff2;padding:3px}
+  .opt{min-width:92px;padding:0 18px;height:58px;display:grid;place-items:center;font-size:23px;font-weight:700;text-transform:uppercase;color:#d8c9cb;
+    cursor:pointer;transition:background .12s,color .12s,transform .12s;transform:skewX(-9deg);margin:0 1px}
+  .opt>span{display:block;transform:skewX(9deg)}
+  .opt:hover:not(.sel){background:#ffffff14}
+  .opt.sel{background:var(--red);color:#fff;box-shadow:0 0 0 3px #fff,0 0 0 4px #0008;transform:skewX(-9deg) scale(1.06);z-index:1}
+  .row.focus .opt.sel{animation:pulse 1.2s ease-in-out infinite}
+  @keyframes pulse{50%{box-shadow:0 0 0 3px #fff,0 0 18px 4px #ff2a3acc}}
+
+  .btns{display:flex;gap:14px;flex:none}
+  .btn{height:56px;min-width:170px;padding:0 30px;display:grid;place-items:center;font-family:var(--font);font-size:25px;font-weight:800;font-style:italic;text-transform:uppercase;color:#fff;border:0;cursor:pointer;
+    background:var(--red);clip-path:polygon(6% 0,100% 0,94% 100%,0 100%);position:relative;transition:filter .12s,transform .12s}
+  .btn::before{content:"";position:absolute;left:0;top:0;bottom:0;width:9%;background:#fff;clip-path:polygon(40% 0,100% 0,60% 100%,0 100%);margin-left:5px;opacity:.9}
+  .btn.alt{background:#f2eaea;color:#111}
+  .btn.alt::before{background:var(--red)}
+  .btn:hover{filter:brightness(1.1);transform:translateX(3px)}
+  .btn:active{transform:scale(.96)}
+
+  /* ---------- Hint bar ---------- */
+  #hints{position:absolute;left:0;right:0;top:696px;height:54px;display:flex;align-items:center;gap:26px;padding:0 20px 0 28px;
+    background:rgba(8,3,5,.85);border:2px solid #ff2a3a66;clip-path:polygon(0 0,100% 0,99.4% 100%,.6% 100%)}
+  #hints .h{display:flex;align-items:center;gap:10px;font-size:21px;font-weight:700;text-transform:uppercase}
+  #hints .sp{flex:1}
+  #hints .kbadge{height:32px;min-width:34px;font-size:17px}
+
+  /* page transitions */
+  #title,#tabs{animation:slideIn .3s both cubic-bezier(.2,.9,.3,1)}
+  @keyframes slideIn{from{opacity:0;transform:translateX(30px)}to{opacity:1;transform:none}}
+
+  /* toast */
+  #toast{position:absolute;left:50%;bottom:90px;transform:translate(-50%,30px);background:#fff;color:#000;font-weight:800;font-style:italic;font-size:26px;text-transform:uppercase;
+    padding:8px 34px;clip-path:polygon(4% 0,100% 0,96% 100%,0 100%);opacity:0;transition:all .25s;z-index:9;pointer-events:none;border-left:10px solid var(--red)}
+  #toast.show{opacity:1;transform:translate(-50%,0)}
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="sideEdge"></div>
+  <aside id="side"></aside>
+  <div id="brand"><div class="tiles" id="brandTiles"></div><div class="tag" id="brandTag"></div></div>
+  <nav id="nav"></nav>
+  <button id="play">PLAY <span>&#9654;</span></button>
+  <div id="ver"></div>
+
+  <main id="content">
+    <div id="head"><div id="title"></div><div id="tabs"></div></div>
+    <div id="list"></div>
+    <div id="scrollbar"><i></i></div>
+    <div id="hints">
+      <div class="h"><span class="kbadge">&#9664;&#9654;</span>Adjust</div>
+      <div class="sp"></div>
+      <div class="h"><span class="kbadge">LB / RB</span>Tabs</div>
+      <div class="h"><span class="kbadge">B</span>Home</div>
+      <div class="h"><span class="kbadge">Start</span>Play</div>
+    </div>
+  </main>
+  <div id="toast"></div>
+</div>
+
+<script>
+/* =====================================================================
+   CONFIG — edit this. Everything on screen is generated from it.
+   row.type: "seg"    -> segmented picker  (options[], value = selected option)
+             "action" -> one or more buttons (actions: [{label, id, alt?}])
+   Hook your app in at the bottom: Launcher.onChange / onAction / onPlay
+   ===================================================================== */
+const CONFIG = {
+  brand: { word: "NIGHTFALL", tag: "LAUNCHER" },   // <- swap for your own
+  version: "v0.5.13-launcher-a18",
+  pages: [
+    { id:"play", title:"Play", tabs:[{ id:"main", label:"Library", rows:[
+      { key:"game", label:"Last Played", desc:"Resume where you left off", type:"action", actions:[{label:"Resume",id:"resume"}] },
+      { key:"browse", label:"Game Library", desc:"Pick something else to launch", type:"action", actions:[{label:"Browse",id:"browse",alt:true}] },
+    ]}]},
+    { id:"display", title:"Display", tabs:[
+      { id:"scaling", label:"Scaling", rows:[
+        { key:"res3d", label:"3D Resolution", desc:"3D scene render scale (UI stays crisp)", type:"seg", options:["360p","480p","540p","720p","1080p"], value:"1080p" },
+        { key:"resUI", label:"Interface Resolution", desc:"720p is faster; 1080p renders sharper menus and portraits", type:"seg", options:["720p","1080p"], value:"1080p" },
+        { key:"sharpen", label:"Sharpening & Upscaling", desc:"CAS is fast & ring-free; FSR 1.0 upscales to native display", type:"seg", options:["Off","CAS","FSR 1.0"], value:"CAS" },
+        { key:"sharpStr", label:"Sharpening Strength", desc:"Tunes CAS or FSR 1.0 sharpening intensity when enabled", type:"seg", options:["Subtle","Med","Strong"], value:"Med" },
+      ]},
+      { id:"enhance", label:"Enhance", rows:[
+        { key:"fxaa", label:"Anti-Aliasing (FXAA)", desc:"Smooths 3D stair-stepping jaggies with low GPU overhead", type:"seg", options:["Off","On"], value:"On" },
+        { key:"color", label:"Color Profile", desc:"Zero-cost vibrance and contrast punch in the present pass", type:"seg", options:["Default","Vivid","Pop"], value:"Vivid" },
+      ]},
+      { id:"framing", label:"Framing", rows:[
+        { key:"aspect", label:"Aspect Ratio", desc:"How the picture fits your screen", type:"seg", options:["Native","16:9","Stretch"], value:"Native" },
+        { key:"safe", label:"Safe Area", desc:"Pull the image in from the edges of the display", type:"seg", options:["0%","2%","5%"], value:"0%" },
+      ]},
+    ]},
+    { id:"performance", title:"Performance", tabs:[
+      { id:"engine", label:"Engine", rows:[
+        { key:"fps", label:"Frame Rate Cap", desc:"30 fps target for stability; 60 fps is experimental", type:"seg", options:["30 FPS","60 FPS"], value:"60 FPS" },
+        { key:"async", label:"Async Replay Thread", desc:"Overlaps command recording and Vulkan replay across big cores", type:"seg", options:["Off","On"], value:"On" },
+        { key:"shader", label:"Shader Compilation", desc:"Async avoids hitches (surfaces pop in); Sync compiles on load (no white pop-in)", type:"seg", options:["Async","Sync"], value:"Async" },
+      ]},
+      { id:"quality", label:"Quality", rows:[
+        { key:"aniso", label:"Anisotropic Filtering", desc:"Sharper textures at steep angles", type:"seg", options:["Off","4x","16x"], value:"4x" },
+      ]},
+      { id:"logs", label:"Logs", rows:[
+        { key:"fpsCounter", label:"FPS Counter", desc:"Displays live frame rate overlay while playing", type:"seg", options:["Off","On"], value:"On" },
+        { key:"debugLog", label:"Debug Logging", desc:"Enable only when debugging or using the 3-finger capture tap", type:"seg", options:["Off","On"], value:"Off" },
+      ]},
+    ]},
+    { id:"controls", title:"Controls", tabs:[
+      { id:"touch", label:"Touch", rows:[
+        { key:"osc", label:"On-Screen Controls", desc:"Enable or disable the virtual touchscreen overlay", type:"seg", options:["Off","On"], value:"On" },
+        { key:"layout", label:"On-Screen Controls Layout", desc:"Drag and position virtual buttons directly on screen", type:"action", actions:[{label:"Edit Layout",id:"editLayout"}] },
+        { key:"hideTouch", label:"Hide Touch Controls", desc:"Keep touch controls invisible while still accepting touches", type:"seg", options:["Off","On"], value:"Off" },
+        { key:"btnSize", label:"Button Size", desc:"Scale of virtual touchscreen buttons", type:"seg", options:["Small","Normal","Large"], value:"Normal" },
+        { key:"btnOpacity", label:"Button Opacity", desc:"Transparency of on-screen touch controls", type:"seg", options:["50%","85%","100%"], value:"85%" },
+        { key:"stickSens", label:"Touch Stick Sensitivity", desc:"How far the virtual stick must move to register", type:"seg", options:["75%","100%","125%"], value:"125%" },
+      ]},
+      { id:"gamepad", label:"Gamepad", rows:[
+        { key:"rumble", label:"Vibration", desc:"Controller rumble strength", type:"seg", options:["Off","Low","High"], value:"High" },
+        { key:"deadzone", label:"Stick Deadzone", desc:"Ignore tiny stick movements", type:"seg", options:["Low","Med","High"], value:"Med" },
+      ]},
+    ]},
+    { id:"files", title:"Files", tabs:[
+      { id:"data", label:"Data", rows:[
+        { key:"keys", label:"Console Keys", desc:"Keys installed", type:"action", actions:[{label:"Choose",id:"chooseKeys",alt:true}] },
+        { key:"save", label:"Save Data", desc:"Import ZIP/folder or export backup to Downloads", type:"action", actions:[{label:"Import",id:"saveImport",alt:true},{label:"Export",id:"saveExport",alt:true}] },
+        { key:"mod", label:"Translation / Mod", desc:"Installs a patch or mod into the mods folder", type:"action", actions:[{label:"Import",id:"modImport",alt:true}] },
+        { key:"driver", label:"Custom GPU Driver", desc:"System driver", type:"action", actions:[{label:"Import",id:"driverImport",alt:true},{label:"Remove",id:"driverRemove",alt:true}] },
+      ]},
+      { id:"appearance", label:"Appearance", rows:[
+        { key:"dim", label:"Wallpaper Dim", desc:"Controls overlay darkness over your custom wallpaper", type:"seg", options:["Light","Med","Dark"], value:"Med" },
+        { key:"sfx", label:"Launcher Sound Effects", desc:"UI clicks, tab swishes, and launch slash audio", type:"seg", options:["Off","On"], value:"On" },
+        { key:"haptics", label:"Launcher Haptics", desc:"Tactile vibration feedback on tabs, toggles, and Play", type:"seg", options:["Off","On"], value:"On" },
+        { key:"icon", label:"Custom Home Shortcut Icon", desc:"Pick an image for the home screen shortcut", type:"action", actions:[{label:"Choose",id:"chooseIcon",alt:true}] },
+      ]},
+      { id:"logs", label:"Logs", rows:[
+        { key:"viewLogs", label:"Launcher Logs", desc:"Open the most recent session log", type:"action", actions:[{label:"Open",id:"openLogs",alt:true}] },
+      ]},
+    ]},
+  ],
+};
+
+/* =====================================================================
+   Public hooks — wire these to your app
+   ===================================================================== */
+const Launcher = {
+  onChange(key, value, page, tab){ console.log("[setting]", key, "=", value); },  // a setting changed
+  onAction(id){ console.log("[action]", id); toast(id.replace(/([A-Z])/g," $1")); },  // a button was pressed
+  onPlay(){ console.log("[play]"); toast("Launching…"); },
+  haptic(){ if(navigator.vibrate) navigator.vibrate(8); },                           // optional feedback
+  getSettings(){ const o={}; CONFIG.pages.forEach(p=>p.tabs.forEach(t=>t.rows.forEach(r=>{ if(r.type==="seg") o[r.key]=r.value; }))); return o; },
+  setSettings(obj){ CONFIG.pages.forEach(p=>p.tabs.forEach(t=>t.rows.forEach(r=>{ if(r.type==="seg" && r.key in obj) r.value=obj[r.key]; }))); render(); },
+};
+window.Launcher = Launcher;
+
+/* ===================== Implementation ===================== */
+const $ = s => document.querySelector(s);
+const state = { page:0, tab:{}, row:0 };
+const store = (()=>{ try{ return window.localStorage }catch(e){ return null } })();
+
+// restore saved values (best effort)
+try{
+  const saved = JSON.parse(store && store.getItem("launcher.settings") || "{}");
+  Launcher.setSettings = Launcher.setSettings; // keep ref
+  CONFIG.pages.forEach(p=>p.tabs.forEach(t=>t.rows.forEach(r=>{ if(r.type==="seg" && r.key in saved && r.options.includes(saved[r.key])) r.value=saved[r.key]; })));
+}catch(e){}
+const persist = () => { try{ store && store.setItem("launcher.settings", JSON.stringify(Launcher.getSettings())) }catch(e){} };
+
+const curPage = () => CONFIG.pages[state.page];
+const curTabIdx = () => state.tab[curPage().id] || 0;
+const curTab = () => curPage().tabs[curTabIdx()];
+const rows = () => curTab().rows;
+
+/* scale stage to fit window */
+function fit(){
+  const s = Math.min(innerWidth/1708, innerHeight/768);
+  const st = $("#stage");
+  st.style.transform = `scale(${s}) translate(-50%,-50%)`;
+}
+addEventListener("resize", fit); fit();
+
+/* brand + static */
+function buildStatic(){
+  $("#brandTiles").innerHTML = [...CONFIG.brand.word].map(c=>`<span>${c}</span>`).join("");
+  $("#brandTag").textContent = CONFIG.brand.tag;
+  $("#ver").textContent = CONFIG.version;
+  $("#nav").innerHTML = CONFIG.pages.map((p,i)=>
+    `<div class="nav-item" data-i="${i}"><span class="lbl">${p.title}</span><span class="n">${String(i+1).padStart(2,"0")}</span></div>`).join("");
+  $("#nav").onclick = e => { const el=e.target.closest(".nav-item"); if(el) goPage(+el.dataset.i); };
+  $("#play").onclick = () => Launcher.onPlay();
+}
+
+function renderNav(){
+  document.querySelectorAll(".nav-item").forEach((el,i)=>el.classList.toggle("active", i===state.page));
+}
+
+function renderHead(){
+  const p = curPage();
+  $("#title").textContent = p.title;
+  const ti = curTabIdx();
+  const multi = p.tabs.length > 1;
+  $("#tabs").innerHTML = multi
+    ? `<span class="kbadge dim">LT</span>` + p.tabs.map((t,i)=>`<div class="tab ${i===ti?"active":""}" data-t="${i}"><span>${t.label}</span></div>`).join("") + `<span class="kbadge">RT</span>`
+    : "";
+  $("#tabs").onclick = e => { const el=e.target.closest(".tab"); if(el) goTab(+el.dataset.t); };
+  // restart anim
+  ["#title","#tabs"].forEach(s=>{ const el=$(s); el.style.animation="none"; el.offsetHeight; el.style.animation=""; });
+}
+
+function renderList(keepScroll){
+  const list = $("#list"), top = list.scrollTop;
+  list.innerHTML = rows().map((r,i)=>{
+    const ctrl = r.type==="seg"
+      ? `<div class="seg">${r.options.map(o=>`<div class="opt ${o===r.value?"sel":""}" data-o="${o}"><span>${o}</span></div>`).join("")}</div>`
+      : `<div class="btns">${r.actions.map(a=>`<button class="btn ${a.alt?"alt":""}" data-a="${a.id}"><span>${a.label}</span></button>`).join("")}</div>`;
+    return `<div class="row ${i===state.row?"focus":""}" data-r="${i}" style="animation-delay:${keepScroll?0:i*45}ms${keepScroll?";animation:none":""}">
+      <div class="info"><h3>${r.label}</h3><p>${r.desc||""}</p></div>${ctrl}</div>`;
+  }).join("");
+  list.scrollTop = keepScroll ? top : 0;
+  list.onclick = e => {
+    const rowEl = e.target.closest(".row"); if(!rowEl) return;
+    state.row = +rowEl.dataset.r;
+    const o = e.target.closest(".opt"), a = e.target.closest(".btn");
+    if(o) setValue(rows()[state.row], o.dataset.o);
+    else if(a) { Launcher.haptic(); Launcher.onAction(a.dataset.a); }
+    focusRow(state.row, true);
+  };
+  updateScrollbar();
+}
+
+function focusRow(i, noRerender){
+  state.row = Math.max(0, Math.min(rows().length-1, i));
+  document.querySelectorAll(".row").forEach((el,k)=>el.classList.toggle("focus",k===state.row));
+  const el = document.querySelector(".row.focus"); if(el) el.scrollIntoView({block:"nearest"});
+  setTimeout(updateScrollbar, 250);
+}
+
+function updateScrollbar(){
+  const l=$("#list"), bar=$("#scrollbar"), thumb=bar.firstElementChild;
+  const ratio = l.clientHeight / Math.max(l.scrollHeight, 1);
+  bar.style.opacity = ratio>=0.999 ? 0 : 1;
+  thumb.style.height = Math.max(ratio*100,12)+"%";
+  thumb.style.top = (l.scrollTop/Math.max(l.scrollHeight,1)*100)+"%";
+}
+$("#list").addEventListener("scroll", updateScrollbar);
+
+function setValue(r, v){
+  if(r.type!=="seg" || r.value===v) return;
+  r.value = v; persist(); Launcher.haptic();
+  Launcher.onChange(r.key, v, curPage().id, curTab().id);
+  const el = document.querySelector(`.row[data-r="${state.row}"]`);
+  if(el) el.querySelectorAll(".opt").forEach(x=>x.classList.toggle("sel", x.dataset.o===v));
+}
+function adjust(dir){
+  const r = rows()[state.row]; if(!r || r.type!=="seg") return;
+  const i = r.options.indexOf(r.value);
+  const n = Math.max(0, Math.min(r.options.length-1, i+dir));
+  setValue(r, r.options[n]);
+}
+
+function goPage(i){
+  if(i<0||i>=CONFIG.pages.length) return;
+  state.page=i; state.row=0; Launcher.haptic();
+  renderNav(); renderHead(); renderList();
+}
+function goTab(i){
+  const p=curPage(); if(i<0||i>=p.tabs.length) return;
+  state.tab[p.id]=i; state.row=0; Launcher.haptic();
+  renderHead(); renderList();
+}
+function render(){ renderNav(); renderHead(); renderList(true); }
+
+function toast(msg){
+  const t=$("#toast"); t.textContent=msg; t.classList.add("show");
+  clearTimeout(toast._t); toast._t=setTimeout(()=>t.classList.remove("show"),1400);
+}
+
+/* ---------- Input: keyboard ---------- */
+addEventListener("keydown", e=>{
+  const k=e.key;
+  if(k==="ArrowDown"){ focusRow(state.row+1); }
+  else if(k==="ArrowUp"){ focusRow(state.row-1); }
+  else if(k==="ArrowRight"){ adjust(+1); }
+  else if(k==="ArrowLeft"){ adjust(-1); }
+  else if(k==="q"||k==="Q"||k==="PageUp"){ goTab(curTabIdx()-1); }
+  else if(k==="e"||k==="E"||k==="PageDown"){ goTab(curTabIdx()+1); }
+  else if(k==="Escape"||k==="Backspace"){ goPage(0); }
+  else if(k==="Enter"){ const r=rows()[state.row]; if(r&&r.type==="action") Launcher.onAction(r.actions[0].id); else if(r) adjust(1); }
+  else if(k==="p"||k==="P"){ Launcher.onPlay(); }
+  else if(/^[1-9]$/.test(k)){ goPage(+k-1); }
+  else return;
+  e.preventDefault();
+});
+
+/* ---------- Input: gamepad (standard mapping) ---------- */
+(function pad(){
+  const prev = {};
+  const held = {};
+  function press(name, down, repeatMs){
+    const now = performance.now();
+    if(down){
+      if(!prev[name]){ prev[name]=true; held[name]=now+repeatMs*1.8; return true; }
+      if(repeatMs && now>held[name]){ held[name]=now+repeatMs; return true; }
+    } else prev[name]=false;
+    return false;
+  }
+  function loop(){
+    const gp = (navigator.getGamepads?navigator.getGamepads():[])[0] || [...(navigator.getGamepads?navigator.getGamepads():[])].find(Boolean);
+    if(gp){
+      const b=i=>gp.buttons[i]&&gp.buttons[i].pressed, ax=gp.axes;
+      if(press("up",   b(12)||ax[1]<-.6, 140)) focusRow(state.row-1);
+      if(press("down", b(13)||ax[1]> .6, 140)) focusRow(state.row+1);
+      if(press("left", b(14)||ax[0]<-.6, 160)) adjust(-1);
+      if(press("right",b(15)||ax[0]> .6, 160)) adjust(+1);
+      if(press("lb", b(4), 0)) goTab(curTabIdx()-1);
+      if(press("rb", b(5), 0)) goTab(curTabIdx()+1);
+      if(press("lt", b(6), 0)) goPage(state.page-1);
+      if(press("rt", b(7), 0)) goPage(state.page+1);
+      if(press("a",  b(0), 0)){ const r=rows()[state.row]; if(r&&r.type==="action") Launcher.onAction(r.actions[0].id); else adjust(1); }
+      if(press("b",  b(1), 0)) goPage(0);
+      if(press("start", b(9), 0)) Launcher.onPlay();
+    }
+    requestAnimationFrame(loop);
+  }
+  loop();
+})();
+
+buildStatic(); render();
+</script>
+</body>
+</html>

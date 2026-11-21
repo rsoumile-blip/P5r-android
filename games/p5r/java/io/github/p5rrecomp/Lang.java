@@ -75,6 +75,18 @@ final class Lang {
         put("High", "Élevés", "Hoch", "Alta", "Alto", "高", "높음", "高", "高");
         put("Frame rate", "Images par seconde", "Bildrate", "Fotogrammi al secondo", "Quadros por segundo",
                 "フレームレート", "프레임 레이트", "帧率", "影格率");
+        put("Async pipeline compilation", "Compilation asynchrone des pipelines graphiques",
+                "Asynchrone Pipeline-Kompilierung", "Compilazione asincrona delle pipeline",
+                "Compilação assíncrona de pipelines", "パイプラインの非同期コンパイル", "파이프라인 비동기 컴파일",
+                "图形管线异步编译", "圖形管線非同步編譯");
+        put("Smart async (brief pop-in possible)", "Asynchrone intelligente (absence visuelle brève possible)",
+                "Intelligent asynchron (kurze Bildlücken möglich)", "Async intelligente (possibile breve assenza visiva)",
+                "Assíncrono inteligente (pode faltar algo por um instante)", "スマート非同期（一瞬表示が欠ける場合あり）",
+                "스마트 비동기 (잠깐 화면이 빠질 수 있음）", "智能异步（可能短暂缺少画面）", "智能非同步（可能短暫缺少畫面）");
+        put("Off (may hitch on new effects)", "Désactivé (saccades possibles avec les nouveaux effets)",
+                "Aus (Ruckler bei neuen Effekten möglich)", "Disattivata (possibili scatti con nuovi effetti)",
+                "Desativado (pode engasgar com novos efeitos)", "オフ（新しい演出でカクつく場合あり）",
+                "끔 (새 효과에서 끊길 수 있음)", "关闭（新特效可能卡顿）", "關閉（新特效可能卡頓）");
         put("60 fps (experimental)", "60 fps (expérimental)", "60 fps (experimentell)", "60 fps (sperimentale)",
                 "60 fps (experimental)", "60 fps（実験的）", "60 fps (실험적)", "60 fps（实验性）", "60 fps（實驗性）");
         put("Shadows", "Ombres", "Schatten", "Ombre", "Sombras", "影", "그림자", "阴影", "陰影");

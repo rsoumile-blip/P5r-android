@@ -15,18 +15,25 @@ import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.Icon;
+import android.graphics.drawable.GradientDrawable;
+import android.media.AudioAttributes;
+import android.media.SoundPool;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.PowerManager;
 import android.os.ParcelFileDescriptor;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
 import android.system.Os;
 import android.view.Gravity;
+import android.view.KeyEvent;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.widget.Button;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -43,6 +50,8 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.text.DateFormat;
+import java.util.Date;
 import java.util.Map;
 
 /**
@@ -57,6 +66,7 @@ import java.util.Map;
  *   graphics    low (default), medium or high: textures one mip smaller (NX_LOD_BIAS=1), half a mip, or the game's
  *               own. (A lower render resolution needs the engine's target sizes: games/p5r/PROGRESO.md.)
  *   frame rate  30 (NX_FPS_CAP=30, default) or 60 (NX_FPS_CAP=60: games/p5r/game.cpp patches the engine's interval)
+ *   pipeline compilation  smart asynchronous (Android default; NX_ASYNC_PIPELINES=2) or synchronous (0)
  *   FPS counter off (default) or on (NX_SHOW_FPS)
  *   shadows     off (NX_SHADOWS=0, default: the shadow maps are not drawn, ~9% of the GPU on the 3D title) or on
  *   on-screen controls on (default) or off (NX_TOUCH_SHOW), their size (NX_TOUCH_SIZE) and opacity (NX_TOUCH_OPACITY),
@@ -93,7 +103,31 @@ public class Launcher extends Activity {
     final List<Option> options = new ArrayList<>();
     final Map<String, String> config = new LinkedHashMap<>();
     TextView status;
+    TextView historyStatus;
     Button play;
+    Button profileButton;
+    ScrollView launcherScroll;
+    final View[] navTargets = new View[6];
+    LinearLayout launcherRoot;
+    P5Views.Backdrop backdrop;
+    SoundPool uiSoundPool;
+    int tabSoundId;
+    boolean tabSoundReady;
+    final Button[] sideNavButtons = new Button[7];
+    TextView pageTitle;
+    int activeSection;
+    LinearLayout subTabBar;
+    final Map<View, Integer> subSections = new LinkedHashMap<>();
+    int activeSubSection;
+    final List<View> focusTargets = new ArrayList<>();
+    int focusIndex;
+    boolean stickUp, stickDown, stickLeft, stickRight;
+    boolean triggerLeft, triggerRight;
+    PowerManager thermalPowerManager;
+    PowerManager.OnThermalStatusChangedListener thermalListener;
+    int lastThermalStatus = -1;
+    boolean manualEdit;
+    String manualEditKey;
     static final int PICK_ZIP = 1, PICK_FOLDER = 2, PICK_GAME = 3, PICK_KEYS = 4, PICK_ICON = 5, PREPARE = 6, PICK_CPK = 7, PICK_DRIVER = 8;
 
     String t(String spanish, String english) { return Lang.t(spanish, english); }
@@ -310,6 +344,16 @@ public class Launcher extends Activity {
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
+        AudioAttributes audio = new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_GAME)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build();
+        uiSoundPool = new SoundPool.Builder().setMaxStreams(2).setAudioAttributes(audio).build();
+        uiSoundPool.setOnLoadCompleteListener(new SoundPool.OnLoadCompleteListener() {
+            @Override public void onLoadComplete(SoundPool pool, int sampleId, int status) {
+                if (sampleId == tabSoundId && status == 0) tabSoundReady = true;
+            }
+        });
+        int tabSoundRes = getResources().getIdentifier("tab_select", "raw", getPackageName());
+        if (tabSoundRes != 0) tabSoundId = uiSoundPool.load(this, tabSoundRes, 1);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
         // The game's texts and subtitles (runtime language.h): its own language names, as a console lists them.
         options.add(new Option("language", "Idioma de textos y subtítulos", "Text and subtitle language",
@@ -337,6 +381,12 @@ public class Launcher extends Activity {
                 new String[] {"Bajos", "Medios", "Altos"}, new String[] {"Low", "Medium", "High"}, 0));
         options.add(new Option("NX_FPS_CAP", "Fotogramas por segundo", "Frame rate", new String[] {"30", "60"},
                 new String[] {"30 fps", "60 fps (experimental)"}, new String[] {"30 fps", "60 fps (experimental)"}, 0));
+        options.add(new Option("THERMAL_PACING", "Control térmico", "Thermal pacing", new String[] {"0", "1"},
+                new String[] {"Desactivado", "Activado (solo con calor)"}, new String[] {"Off", "On (only when hot)"}, 1));
+        options.add(new Option("NX_ASYNC_PIPELINES", "Compilación asíncrona de pipelines", "Async pipeline compilation",
+                new String[] {"2", "0"},
+                new String[] {"Inteligente (puede faltar algo un instante)", "Desactivada (puede dar tirones con efectos nuevos)"},
+                new String[] {"Smart async (brief pop-in possible)", "Off (may hitch on new effects)"}, 0));
         options.add(new Option("NX_SHADOWS", "Sombras", "Shadows", new String[] {"0", "1"},
                 new String[] {"Desactivadas", "Activadas"}, new String[] {"Off", "On"}, 0));
         options.add(new Option("NX_MALI_LOW_SHADOWS", "Calidad de sombras", "Shadow quality",
@@ -375,34 +425,66 @@ public class Launcher extends Activity {
                 new String[] {"50", "75", "100", "125", "150", "200", "250"},
                 new String[] {"50%", "75%", "100%", "125%", "150%", "200%", "250%"},
                 new String[] {"50%", "75%", "100%", "125%", "150%", "200%", "250%"}, 2));
+        if (!PerformanceProfiles.isProfile(prefs().getString("graphics_profile", PerformanceProfiles.MANUAL)))
+            prefs().edit().putString("graphics_profile", PerformanceProfiles.MANUAL).apply();
+        setupThermalPacing();
         build();
     }
 
     @Override
     protected void onResume() {
         super.onResume();
+        finishTrackedSession();
         refresh();
+        refreshHistory();
+    }
+
+    @Override protected void onDestroy() {
+        if (uiSoundPool != null) { uiSoundPool.release(); uiSoundPool = null; }
+        if (thermalPowerManager != null && thermalListener != null) {
+            thermalPowerManager.removeThermalStatusListener(thermalListener);
+            thermalListener = null;
+        }
+        super.onDestroy();
     }
 
     void build() {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(Color.rgb(20, 4, 6));
+        launcherRoot = root;
+        root.setBackgroundColor(Color.TRANSPARENT);
         int pad = dp(24);
         root.setPadding(pad, pad, pad, pad);
 
         TextView title = new TextView(this);
-        title.setText("PERSONA 5 ROYAL");
+        title.setText("DISPLAY");
+        pageTitle = title;
         title.setTextColor(Color.rgb(230, 0, 18));
         title.setTextSize(30);
         title.setTypeface(Typeface.DEFAULT_BOLD);
+        title.setTag("shared");
         root.addView(title);
+        subTabBar = new LinearLayout(this);
+        subTabBar.setOrientation(LinearLayout.HORIZONTAL);
+        subTabBar.setGravity(Gravity.CENTER_VERTICAL);
+        subTabBar.setTag("shared");
+        root.addView(subTabBar);
+
+        addProfileRow(root);
+        root.getChildAt(root.getChildCount() - 1).setTag("shared");
 
         status = new TextView(this);
         status.setTextColor(Color.rgb(220, 220, 220));
         status.setTextSize(14);
         status.setPadding(0, dp(6), 0, dp(14));
         root.addView(status);
+        status.setTag("shared");
+        historyStatus = new TextView(this);
+        historyStatus.setTextColor(0xFFB8A6AD);
+        historyStatus.setTextSize(13);
+        historyStatus.setPadding(0, 0, 0, dp(10));
+        historyStatus.setTag("shared");
+        root.addView(historyStatus);
 
         addRow(root, t("Archivo del juego (.nsp / .xci)", "Game file (.nsp / .xci)"), t("Elegir", "Choose"),
                 new View.OnClickListener() {
@@ -411,29 +493,51 @@ public class Launcher extends Activity {
                         pick(PICK_GAME, "*/*", false);
                     }
                 });
+        root.getChildAt(root.getChildCount() - 1).setTag(3);
+        navTargets[3] = root.getChildAt(root.getChildCount() - 1);
         addRow(root, t("Claves (prod.keys)", "Keys (prod.keys)"), t("Elegir", "Choose"), new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 pick(PICK_KEYS, "*/*", true);
             }
         });
+        root.getChildAt(root.getChildCount() - 1).setTag(3);
         addRow(root, t("Icono", "Icon"), t("Elegir imagen", "Choose a picture"), new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 pick(PICK_ICON, "image/*", false);
             }
         });
+        root.getChildAt(root.getChildCount() - 1).setTag(4);
+        addHapticsRow(root);
+        addAppearanceRows(root);
 
         for (final Option o : options) {
             LinearLayout row = new LinearLayout(this);
             row.setOrientation(LinearLayout.HORIZONTAL);
             row.setGravity(Gravity.CENTER_VERTICAL);
-            row.setPadding(0, dp(4), 0, dp(4));
+            row.setPadding(dp(10), dp(7), dp(8), dp(7));
+            GradientDrawable panel = new GradientDrawable();
+            panel.setColor(0xD91E1118);
+            panel.setStroke(dp(1), 0x66F21B35);
+            row.setBackground(panel);
+            LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            rowParams.bottomMargin = dp(5);
+            LinearLayout info = new LinearLayout(this);
+            info.setOrientation(LinearLayout.VERTICAL);
             TextView name = new TextView(this);
             name.setText(t(o.es, o.en));
             name.setTextColor(Color.WHITE);
-            name.setTextSize(17);
-            row.addView(name, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+            name.setTextSize(20);
+            name.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
+            info.addView(name);
+            TextView description = new TextView(this);
+            description.setText(optionDescription(o.key));
+            description.setTextColor(0xFFe4d6d8);
+            description.setTextSize(14);
+            info.addView(description);
+            row.addView(info, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
             final Button value = new Button(this);
             value.setAllCaps(false);
             value.setMinWidth(dp(180));
@@ -441,14 +545,30 @@ public class Launcher extends Activity {
             value.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
+                    if ("THERMAL_PACING".equals(o.key)) {
+                        o.pick = (o.pick + 1) % o.values.length;
+                        prefs().edit().putBoolean("thermal_pacing", o.pick == 1).apply();
+                        syncThermalPacing();
+                        value.setText(label(o));
+                        return;
+                    }
+                    if (profiled() && PerformanceProfiles.controls(o.key)) return;
                     o.pick = (o.pick + 1) % o.values.length;
                     value.setText(label(o));
+                    manualEdit = PerformanceProfiles.MANUAL.equals(profile()) && PerformanceProfiles.controls(o.key);
+                    manualEditKey = manualEdit ? o.key : null;
                     save();
+                    manualEdit = false;
+                    manualEditKey = null;
                     updateButtons(getWindow().getDecorView());
                 }
             });
             value.setTag(o);
-            root.addView(row);
+            row.setTag(optionSection(o.key));
+            subSections.put(row, optionSubSection(o.key));
+            root.addView(row, rowParams);
+            if ("RESOLUTION".equals(o.key)) navTargets[0] = row;
+            if ("GRAPHICS".equals(o.key)) navTargets[1] = row;
         }
 
         LinearLayout edit = new LinearLayout(this);
@@ -477,6 +597,9 @@ public class Launcher extends Activity {
             }
         });
         root.addView(edit);
+        edit.setTag(2);
+        subSections.put(edit, 0);
+        navTargets[2] = edit;
 
         // Saves: in from a ZIP or a folder (a Switch backup or another player's), out to a ZIP in Download.
         LinearLayout saves = new LinearLayout(this);
@@ -519,6 +642,7 @@ public class Launcher extends Activity {
             }
         });
         root.addView(saves);
+        saves.setTag(3);
 
         // Translation CPK import
         LinearLayout transRow = new LinearLayout(this);
@@ -546,6 +670,7 @@ public class Launcher extends Activity {
             }
         });
         root.addView(transRow);
+        transRow.setTag(3);
 
         // Custom GPU driver (e.g. Mesa Turnip for Adreno): imported into the app's private files, opened by the runtime
         LinearLayout drvRow = new LinearLayout(this);
@@ -579,6 +704,7 @@ public class Launcher extends Activity {
             }
         });
         root.addView(drvRow);
+        drvRow.setTag(3);
         showDriver();
 
         // Debug logs export
@@ -603,8 +729,10 @@ public class Launcher extends Activity {
             }
         });
         root.addView(logsRow);
+        logsRow.setTag(5);
+        navTargets[4] = logsRow;
 
-        play = new Button(this);
+        play = new P5Views.SlashButton(this);
         play.setTextSize(20);
         play.setAllCaps(false);
         play.setBackgroundColor(Color.rgb(230, 0, 18));
@@ -612,6 +740,7 @@ public class Launcher extends Activity {
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(64));
         lp.topMargin = dp(18);
         root.addView(play, lp);
+        play.setTag("shared");
         play.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -625,7 +754,7 @@ public class Launcher extends Activity {
                     else if (!prepared()) prepare();
                     else if (openGameForRuntime()) {
                         save();
-                        startActivity(new Intent(Launcher.this, android.app.NativeActivity.class));
+                        launchTrackedGame();
                     } else {
                         tell(t("No se pudo abrir el juego", "The game could not be opened"), gameName());
                     }
@@ -640,18 +769,508 @@ public class Launcher extends Activity {
                     return;
                 }
                 save();
-                startActivity(new Intent(Launcher.this, android.app.NativeActivity.class));
+                launchTrackedGame();
             }
         });
 
+        TextView hintBar = new TextView(this);
+        hintBar.setText("◀ ▶  ADJUST      LB / RB  TABS      B  HOME      START  PLAY");
+        hintBar.setTextColor(0xFFffe500);
+        hintBar.setTextSize(13);
+        hintBar.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
+        hintBar.setGravity(Gravity.CENTER_VERTICAL);
+        hintBar.setPadding(dp(10), 0, dp(10), 0);
+        GradientDrawable hintBg = new GradientDrawable();
+        hintBg.setColor(0xDD080305);
+        hintBg.setStroke(dp(1), 0x66ff2a3a);
+        hintBar.setBackground(hintBg);
+        hintBar.setTag("shared");
+        root.addView(hintBar, new LinearLayout.LayoutParams(-1, dp(44)));
+
         ScrollView scroll = new ScrollView(this);
+        launcherScroll = scroll;
+        scroll.setBackgroundColor(Color.TRANSPARENT);
         scroll.addView(root);
-        setContentView(scroll);
+        LinearLayout shell = new LinearLayout(this);
+        shell.setOrientation(LinearLayout.HORIZONTAL);
+        shell.addView(buildSidebar(), new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 0.31f));
+        shell.addView(scroll, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 0.69f));
+        FrameLayout screen = new FrameLayout(this);
+        backdrop = new P5Views.Backdrop(this, prefs().getInt("launcher_wallpaper", 0),
+                prefs().getBoolean("launcher_motion", false));
+        screen.addView(backdrop, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        screen.addView(shell, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        setContentView(screen);
+        showLauncherSection(0);
+        rebuildFocus(0);
+        animateLauncherEntrance(root);
+    }
+
+    LinearLayout buildSidebar() {
+        LinearLayout side = new P5Views.Sidebar(this);
+        side.setOrientation(LinearLayout.VERTICAL);
+        side.setPadding(dp(18), dp(20), dp(12), dp(14));
+        LinearLayout brand = new LinearLayout(this);
+        brand.setOrientation(LinearLayout.HORIZONTAL);
+        brand.setRotation(-2f);
+        for (int i = 0; i < "NIGHTFALL".length(); i++) {
+            TextView tile = new TextView(this);
+            tile.setText(String.valueOf("NIGHTFALL".charAt(i)));
+            tile.setGravity(Gravity.CENTER);
+            tile.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
+            tile.setTextSize(23);
+            tile.setTextColor(i % 2 == 0 ? Color.WHITE : Color.BLACK);
+            GradientDrawable tileBg = new GradientDrawable();
+            tileBg.setColor(i % 2 == 0 ? Color.BLACK : Color.WHITE);
+            tileBg.setStroke(dp(1), i % 2 == 0 ? Color.WHITE : Color.TRANSPARENT);
+            tile.setBackground(tileBg);
+            tile.setShadowLayer(dp(3), dp(2), dp(2), Color.rgb(232,16,31));
+            LinearLayout.LayoutParams tileLp = new LinearLayout.LayoutParams(dp(27), dp(36));
+            tileLp.rightMargin = dp(2); brand.addView(tile, tileLp);
+        }
+        side.addView(brand);
+        TextView tag = new TextView(this); tag.setText("LAUNCHER");
+        tag.setTextColor(Color.WHITE); tag.setTextSize(12); tag.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD_ITALIC));
+        tag.setBackgroundColor(Color.rgb(232,16,31)); tag.setPadding(dp(8),dp(2),dp(8),dp(2));
+        LinearLayout.LayoutParams tagLp = new LinearLayout.LayoutParams(-2,-2); tagLp.bottomMargin=dp(18); side.addView(tag,tagLp);
+        String[] labels = {"PLAY", "DISPLAY", "PERFORMANCE", "CONTROLS", "FILES", "LOOK", "LOGS"};
+        int[] sections = {-1, 0, 1, 2, 3, 4, 5};
+        for (int i = 0; i < labels.length; i++) {
+            final int section = sections[i];
+            Button item = new Button(this); item.setAllCaps(true); item.setText(labels[i]);
+            sideNavButtons[i] = item;
+            item.setTextColor(Color.rgb(185,169,171)); item.setTextSize(12);
+            item.setGravity(Gravity.CENTER_VERTICAL | Gravity.LEFT);
+            item.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD_ITALIC));
+            item.setBackgroundColor(0xFF141012);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, dp(46)); lp.bottomMargin = dp(5);
+            side.addView(item, lp);
+            item.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) {
+                haptic(v); if (section >= 0) { playTabSound(); showLauncherSection(section); } else if (play != null) play.performClick();
+            }});
+        }
+        TextView version = new TextView(this); version.setText("v0.5.13-launcher-a18");
+        version.setTextColor(0xFFB8A6AD); version.setTextSize(10); version.setPadding(0,dp(8),0,0);
+        side.addView(version);
+        return side;
+    }
+
+    void launchTrackedGame() {
+        prefs().edit().putLong("history_pending_start", System.currentTimeMillis())
+                .putString("history_pending_profile", profile()).apply();
+        startActivity(new Intent(this, android.app.NativeActivity.class));
+    }
+
+    void finishTrackedSession() {
+        long start = prefs().getLong("history_pending_start", 0);
+        if (start <= 0) return;
+        long elapsed = Math.max(0, System.currentTimeMillis() - start);
+        if (elapsed < 6L * 60 * 60 * 1000) {
+            prefs().edit().putLong("history_last_start", start)
+                    .putLong("history_last_duration", elapsed)
+                    .putString("history_last_profile", prefs().getString("history_pending_profile", "Manual"))
+                    .putInt("history_sessions", prefs().getInt("history_sessions", 0) + 1).apply();
+        }
+        prefs().edit().remove("history_pending_start").remove("history_pending_profile").apply();
+    }
+
+    void refreshHistory() {
+        if (historyStatus == null) return;
+        long start = prefs().getLong("history_last_start", 0);
+        if (start == 0) {
+            historyStatus.setText(t("Historial: todavía no hay sesiones", "Play history: no sessions yet"));
+            return;
+        }
+        long mins = prefs().getLong("history_last_duration", 0) / 60000;
+        String when = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT, Locale.getDefault())
+                .format(new Date(start));
+        String summary = t("Última sesión: " + mins + " min • " + when + " • " + prefs().getString("history_last_profile", "Manual"),
+                "Last session: " + mins + " min • " + when + " • " + prefs().getString("history_last_profile", "Manual"));
+        historyStatus.setText(summary);
+    }
+
+    void addLauncherTabs(LinearLayout root) {
+        LinearLayout tabs = new LinearLayout(this);
+        tabs.setOrientation(LinearLayout.HORIZONTAL);
+        tabs.setGravity(Gravity.CENTER_VERTICAL);
+        String[] labels = {"DISPLAY", "PERFORMANCE", "CONTROLS", "FILES", "LOOK", "LOGS"};
+        for (int i = 0; i < labels.length; i++) {
+            final int index = i;
+            Button tab = new Button(this);
+            tab.setAllCaps(true);
+            tab.setText(labels[i]);
+            tab.setTextSize(10);
+            tab.setTextColor(Color.WHITE);
+            tab.setBackgroundColor(index == 0 ? Color.rgb(190, 0, 25) : Color.rgb(48, 20, 29));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(42), 1f);
+            lp.setMargins(dp(2), dp(3), dp(2), dp(8));
+            tabs.addView(tab, lp);
+            tab.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    haptic(v);
+                    playTabSound();
+                    showLauncherSection(index);
+                }
+            });
+        }
+        root.addView(tabs);
+        tabs.setTag("shared");
+    }
+
+    void addHapticsRow(LinearLayout root) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(10), dp(7), dp(8), dp(7));
+        GradientDrawable panel = new GradientDrawable();
+        panel.setColor(0xD91E1118);
+        panel.setStroke(dp(1), 0x66F21B35);
+        row.setBackground(panel);
+        TextView name = new TextView(this);
+        name.setText(t("Vibración del launcher", "Launcher haptics"));
+        name.setTextColor(Color.WHITE);
+        name.setTextSize(17);
+        row.addView(name, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        Button toggle = new Button(this);
+        toggle.setAllCaps(false);
+        row.addView(toggle);
+        final Runnable update = new Runnable() {
+            @Override public void run() {
+                toggle.setText(prefs().getBoolean("launcher_haptics", false)
+                        ? t("Activada", "On") : t("Desactivada", "Off"));
+            }
+        };
+        update.run();
+        toggle.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                prefs().edit().putBoolean("launcher_haptics", !prefs().getBoolean("launcher_haptics", false)).apply();
+                update.run();
+                haptic(v);
+            }
+        });
+        row.setTag(4);
+        root.addView(row);
+        subSections.put(row, 1);
+    }
+
+    void addAppearanceRows(LinearLayout root) {
+        LinearLayout wallpaperRow = new LinearLayout(this);
+        wallpaperRow.setOrientation(LinearLayout.HORIZONTAL);
+        wallpaperRow.setGravity(Gravity.CENTER_VERTICAL);
+        wallpaperRow.setPadding(dp(10), dp(7), dp(8), dp(7));
+        TextView name = new TextView(this);
+        name.setText(t("Fondo", "Wallpaper")); name.setTextColor(Color.WHITE); name.setTextSize(17);
+        wallpaperRow.addView(name, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        Button choose = new Button(this); choose.setAllCaps(false); wallpaperRow.addView(choose);
+        final String[] names = {"Calling Card", "Velvet", "Crimson"};
+        Runnable updateWallpaper = new Runnable() { @Override public void run() {
+            int i = prefs().getInt("launcher_wallpaper", 0); choose.setText(names[Math.max(0, Math.min(2, i))]);
+        }};
+        updateWallpaper.run();
+        choose.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) {
+            int next = (prefs().getInt("launcher_wallpaper", 0) + 1) % names.length;
+            prefs().edit().putInt("launcher_wallpaper", next).apply(); updateWallpaper.run(); haptic(v);
+            if (backdrop != null) backdrop.setAppearance(next, prefs().getBoolean("launcher_motion", false));
+        }});
+        wallpaperRow.setTag(4); root.addView(wallpaperRow);
+
+        LinearLayout motionRow = new LinearLayout(this);
+        motionRow.setOrientation(LinearLayout.HORIZONTAL); motionRow.setGravity(Gravity.CENTER_VERTICAL);
+        motionRow.setPadding(dp(10), dp(7), dp(8), dp(7));
+        TextView motionName = new TextView(this); motionName.setText(t("Fondo animado", "Animated wallpaper"));
+        motionName.setTextColor(Color.WHITE); motionName.setTextSize(17);
+        motionRow.addView(motionName, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        Button motion = new Button(this); motion.setAllCaps(false); motionRow.addView(motion);
+        Runnable updateMotion = new Runnable() { @Override public void run() {
+            motion.setText(prefs().getBoolean("launcher_motion", false) ? t("Activado", "On") : t("Estático", "Static"));
+        }};
+        updateMotion.run();
+        motion.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) {
+            boolean next = !prefs().getBoolean("launcher_motion", false);
+            prefs().edit().putBoolean("launcher_motion", next).apply(); updateMotion.run(); haptic(v);
+            if (backdrop != null) backdrop.setAppearance(prefs().getInt("launcher_wallpaper", 0), next);
+        }});
+        motionRow.setTag(4); root.addView(motionRow);
+
+        LinearLayout sfxRow = new LinearLayout(this);
+        sfxRow.setOrientation(LinearLayout.HORIZONTAL); sfxRow.setGravity(Gravity.CENTER_VERTICAL);
+        sfxRow.setPadding(dp(10), dp(7), dp(8), dp(7));
+        TextView sfxName = new TextView(this); sfxName.setText(t("Sonido al cambiar pestañas", "Tab switch sound"));
+        sfxName.setTextColor(Color.WHITE); sfxName.setTextSize(17);
+        sfxRow.addView(sfxName, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        Button sfx = new Button(this); sfx.setAllCaps(false); sfxRow.addView(sfx);
+        Runnable updateSfx = new Runnable() { @Override public void run() {
+            sfx.setText(prefs().getBoolean("launcher_sfx", true) ? t("Activado", "On") : t("Desactivado", "Off"));
+        }};
+        updateSfx.run();
+        sfx.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) {
+            boolean next = !prefs().getBoolean("launcher_sfx", true);
+            prefs().edit().putBoolean("launcher_sfx", next).apply(); updateSfx.run(); haptic(v);
+            if (next) playTabSound();
+        }});
+        sfxRow.setTag(4); root.addView(sfxRow); subSections.put(sfxRow, 1);
+    }
+
+    void haptic(View view) {
+        if (prefs().getBoolean("launcher_haptics", false))
+            view.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP);
+    }
+
+    void playTabSound() {
+        if (prefs().getBoolean("launcher_sfx", true) && uiSoundPool != null && tabSoundReady)
+            uiSoundPool.play(tabSoundId, 0.7f, 0.7f, 1, 0, 1f);
+    }
+
+    void showLauncherSection(int selected) {
+        if (launcherRoot == null) return;
+        activeSection = Math.max(0, Math.min(5, selected));
+        activeSubSection = 0;
+        if (pageTitle != null) {
+            String[] pageNames = {"DISPLAY", "PERFORMANCE", "CONTROLS", "FILES", "APPEARANCE", "LOGS"};
+            pageTitle.setText(pageNames[activeSection]);
+        }
+        for (int i = 1; i < sideNavButtons.length; i++) {
+            Button item = sideNavButtons[i];
+            if (item == null) continue;
+            boolean selectedItem = i == activeSection + 1;
+            item.setBackgroundColor(selectedItem ? Color.WHITE : 0xFF141012);
+            item.setTextColor(selectedItem ? Color.BLACK : Color.rgb(185,169,171));
+            item.setTranslationX(selectedItem ? dp(12) : 0);
+            item.setElevation(selectedItem ? dp(5) : 0);
+        }
+        renderSubTabs();
+        for (int i = 0; i < launcherRoot.getChildCount(); i++) {
+            View child = launcherRoot.getChildAt(i);
+            Object tag = child.getTag();
+            boolean visible = tag == null || "shared".equals(tag);
+            if (tag instanceof Integer && (Integer) tag == selected)
+                visible = subSections.getOrDefault(child, 0) == activeSubSection;
+            child.setVisibility(visible ? View.VISIBLE : View.GONE);
+        }
+        applySubSection();
+        rebuildFocus(0);
+    }
+
+    int optionSubSection(String key) {
+        if ("NX_STRETCH".equals(key)) return 2;
+        if ("NX_FSR".equals(key)) return 1;
+        if ("NX_SHOW_FPS".equals(key)) return 2;
+        if ("GRAPHICS".equals(key) || key.contains("CROWD") || key.contains("BLOOM")) return 1;
+        if ("NX_GAMEPAD_LAYOUT".equals(key) || key.contains("SENSITIVITY")) return 1;
+        return 0;
+    }
+
+    int optionSection(String key) {
+        if ("RESOLUTION".equals(key) || "NX_HUD_1080".equals(key) || "NX_FSR".equals(key)
+                || "NX_STRETCH".equals(key) || "language".equals(key)) return 0;
+        if (key.startsWith("NX_TOUCH") || "NX_GAMEPAD_LAYOUT".equals(key) || key.contains("SENSITIVITY")) return 2;
+        return 1;
+    }
+
+    void renderSubTabs() {
+        if (subTabBar == null) return;
+        subTabBar.removeAllViews();
+        String[][] pages = {{"SCALING", "ENHANCE", "FRAMING"}, {"ENGINE", "QUALITY", "LOGS"},
+                {"TOUCH", "GAMEPAD"}, {"DATA", "APPEARANCE", "LOGS"}, {"WALLPAPER", "FEEDBACK"}, {"EXPORT"}};
+        String[] tabs = pages[activeSection];
+        for (int i = 0; i < tabs.length; i++) {
+            final int which = i;
+            Button tab = new Button(this);
+            tab.setAllCaps(true); tab.setText(tabs[i]); tab.setTextSize(11);
+            tab.setTextColor(i == activeSubSection ? Color.BLACK : Color.WHITE);
+            tab.setBackgroundColor(i == activeSubSection ? Color.WHITE : 0xFF1b1214);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(40), 1f);
+            lp.setMargins(dp(3), dp(6), dp(3), dp(8)); subTabBar.addView(tab, lp);
+            tab.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) {
+                haptic(v); playTabSound(); activeSubSection = which; renderSubTabs();
+                applySubSection(); rebuildFocus(0);
+            }});
+        }
+    }
+
+    void applySubSection() {
+        if (launcherRoot == null) return;
+        for (int j=0;j<launcherRoot.getChildCount();j++) {
+            View child=launcherRoot.getChildAt(j); Object tag=child.getTag();
+            if (tag instanceof Integer && (Integer)tag==activeSection)
+                child.setVisibility(subSections.getOrDefault(child,0)==activeSubSection?View.VISIBLE:View.GONE);
+        }
+    }
+
+    void collectFocusTargets(ViewGroup parent) {
+        for (int i = 0; i < parent.getChildCount(); i++) {
+            View child = parent.getChildAt(i);
+            if (child.getVisibility() != View.VISIBLE) continue;
+            if (child instanceof Button && child.isEnabled()) focusTargets.add(child);
+            if (child instanceof ViewGroup) collectFocusTargets((ViewGroup) child);
+        }
+    }
+
+    void rebuildFocus(int index) {
+        focusTargets.clear();
+        if (launcherRoot != null) collectFocusTargets(launcherRoot);
+        focusIndex = focusTargets.isEmpty() ? 0 : Math.max(0, Math.min(index, focusTargets.size() - 1));
+        updateFocusVisual();
+    }
+
+    void updateFocusVisual() {
+        for (int i = 0; i < focusTargets.size(); i++) {
+            View view = focusTargets.get(i);
+            boolean focused = i == focusIndex;
+            view.setScaleX(focused ? 1.04f : 1f);
+            view.setScaleY(focused ? 1.04f : 1f);
+            view.setElevation(focused ? dp(8) : 0);
+            if (Build.VERSION.SDK_INT >= 23) {
+                if (focused) {
+                    GradientDrawable ring = new GradientDrawable();
+                    ring.setColor(Color.TRANSPARENT);
+                    ring.setStroke(dp(3), 0xFFffe500);
+                    view.setForeground(ring);
+                } else view.setForeground(null);
+            }
+        }
+    }
+
+    @Override public boolean dispatchKeyEvent(KeyEvent event) {
+        if (event.getAction() != KeyEvent.ACTION_DOWN) return super.dispatchKeyEvent(event);
+        int key = event.getKeyCode();
+        if (key == KeyEvent.KEYCODE_DPAD_DOWN || key == KeyEvent.KEYCODE_DPAD_UP) {
+            if (!focusTargets.isEmpty()) {
+                focusIndex = Math.max(0, Math.min(focusTargets.size()-1, focusIndex + (key == KeyEvent.KEYCODE_DPAD_DOWN ? 1 : -1)));
+                updateFocusVisual(); focusTargets.get(focusIndex).requestFocus(); return true;
+            }
+        } else if (key == KeyEvent.KEYCODE_DPAD_LEFT || key == KeyEvent.KEYCODE_DPAD_RIGHT) {
+            if (!focusTargets.isEmpty()) { adjustFocusedOption(key == KeyEvent.KEYCODE_DPAD_LEFT ? -1 : 1); return true; }
+        } else if (key == KeyEvent.KEYCODE_BUTTON_L1 || key == KeyEvent.KEYCODE_BUTTON_R1) {
+            int count = subTabCount(activeSection);
+            activeSubSection = Math.max(0, Math.min(count - 1, activeSubSection + (key == KeyEvent.KEYCODE_BUTTON_L1 ? -1 : 1)));
+            playTabSound(); renderSubTabs(); applySubSection(); return true;
+        } else if (key == KeyEvent.KEYCODE_BUTTON_L2 || key == KeyEvent.KEYCODE_BUTTON_R2) {
+            playTabSound(); showLauncherSection(Math.max(0, Math.min(5, activeSection + (key == KeyEvent.KEYCODE_BUTTON_L2 ? -1 : 1)))); return true;
+        } else if (key == KeyEvent.KEYCODE_BUTTON_START) {
+            if (play != null) play.performClick(); return true;
+        } else if (key == KeyEvent.KEYCODE_BUTTON_B || key == KeyEvent.KEYCODE_ESCAPE) {
+            showLauncherSection(0); return true;
+        } else if (key == KeyEvent.KEYCODE_ENTER || key == KeyEvent.KEYCODE_BUTTON_A) {
+            if (!focusTargets.isEmpty()) { focusTargets.get(focusIndex).performClick(); return true; }
+        }
+        return super.dispatchKeyEvent(event);
+    }
+
+    int subTabCount(int page) {
+        if (page == 0 || page == 1 || page == 3) return 3;
+        if (page == 2 || page == 4) return 2;
+        return 1;
+    }
+
+    void adjustFocusedOption(int dir) {
+        View focused = focusTargets.get(focusIndex);
+        Object tag = focused.getTag();
+        if (!(tag instanceof Option)) return;
+        Option o = (Option) tag;
+        if (profiled() && PerformanceProfiles.controls(o.key)) return;
+        int next = Math.max(0, Math.min(o.values.length - 1, o.pick + dir));
+        if (next == o.pick) return;
+        o.pick = next;
+        if ("THERMAL_PACING".equals(o.key)) {
+            prefs().edit().putBoolean("thermal_pacing", o.pick == 1).apply();
+            syncThermalPacing();
+            updateButtons(getWindow().getDecorView());
+            return;
+        }
+        manualEdit = PerformanceProfiles.MANUAL.equals(profile()) && PerformanceProfiles.controls(o.key);
+        manualEditKey = manualEdit ? o.key : null;
+        save(); manualEdit = false; manualEditKey = null;
+        updateButtons(getWindow().getDecorView());
+    }
+
+    @Override public boolean onGenericMotionEvent(android.view.MotionEvent event) {
+        if ((event.getSource() & android.view.InputDevice.SOURCE_JOYSTICK) != android.view.InputDevice.SOURCE_JOYSTICK
+                || event.getAction() != android.view.MotionEvent.ACTION_MOVE) return super.onGenericMotionEvent(event);
+        float x = Math.abs(event.getAxisValue(android.view.MotionEvent.AXIS_HAT_X)) > .2f
+                ? event.getAxisValue(android.view.MotionEvent.AXIS_HAT_X) : event.getAxisValue(android.view.MotionEvent.AXIS_X);
+        float y = Math.abs(event.getAxisValue(android.view.MotionEvent.AXIS_HAT_Y)) > .2f
+                ? event.getAxisValue(android.view.MotionEvent.AXIS_HAT_Y) : event.getAxisValue(android.view.MotionEvent.AXIS_Y);
+        boolean up = y < -.65f, down = y > .65f, left = x < -.65f, right = x > .65f;
+        if (up && !stickUp) moveFocus(-1); if (down && !stickDown) moveFocus(1);
+        if (left && !stickLeft) adjustFocusedOption(-1); if (right && !stickRight) adjustFocusedOption(1);
+        stickUp = up; stickDown = down; stickLeft = left; stickRight = right;
+        float leftTrigger = Math.max(event.getAxisValue(android.view.MotionEvent.AXIS_LTRIGGER),
+                event.getAxisValue(android.view.MotionEvent.AXIS_BRAKE));
+        float rightTrigger = Math.max(event.getAxisValue(android.view.MotionEvent.AXIS_RTRIGGER),
+                event.getAxisValue(android.view.MotionEvent.AXIS_GAS));
+        boolean leftPressed = leftTrigger > .65f, rightPressed = rightTrigger > .65f;
+        if (leftPressed && !triggerLeft) { playTabSound(); showLauncherSection(activeSection - 1); }
+        if (rightPressed && !triggerRight) { playTabSound(); showLauncherSection(activeSection + 1); }
+        triggerLeft = leftPressed; triggerRight = rightPressed;
+        return true;
+    }
+
+    void moveFocus(int dir) {
+        if (focusTargets.isEmpty()) return;
+        focusIndex = Math.max(0, Math.min(focusTargets.size() - 1, focusIndex + dir));
+        updateFocusVisual(); focusTargets.get(focusIndex).requestFocus();
+    }
+
+    void setupThermalPacing() {
+        Option option = findOption("THERMAL_PACING");
+        boolean enabled = prefs().getBoolean("thermal_pacing", true);
+        if (option != null) option.pick = enabled ? 1 : 0;
+        if (Build.VERSION.SDK_INT < 29) return;
+        thermalPowerManager = (PowerManager) getSystemService(POWER_SERVICE);
+        if (thermalPowerManager == null) return;
+        thermalListener = new PowerManager.OnThermalStatusChangedListener() {
+            @Override public void onThermalStatusChanged(int status) {
+                lastThermalStatus = status;
+                syncThermalPacing();
+            }
+        };
+        thermalPowerManager.addThermalStatusListener(thermalListener);
+        lastThermalStatus = thermalPowerManager.getCurrentThermalStatus();
+        syncThermalPacing();
+    }
+
+    void syncThermalPacing() {
+        File capFile = new File(dataDir(), "thermal_fps");
+        if (!prefs().getBoolean("thermal_pacing", true) || lastThermalStatus < PowerManager.THERMAL_STATUS_SEVERE) {
+            capFile.delete();
+            return;
+        }
+        if (!hasAccess()) return;
+        int cap = lastThermalStatus >= PowerManager.THERMAL_STATUS_CRITICAL ? 10 : 15;
+        File tempFile = new File(dataDir(), "thermal_fps.tmp");
+        try {
+            dataDir().mkdirs();
+            try (FileWriter writer = new FileWriter(tempFile)) { writer.write(Integer.toString(cap)); }
+            if (!tempFile.renameTo(capFile)) {
+                try (FileWriter writer = new FileWriter(capFile)) { writer.write(Integer.toString(cap)); }
+                tempFile.delete();
+            }
+        } catch (Exception ignored) {
+            tempFile.delete();
+        }
+    }
+
+    // Short, staggered reveal; it runs only in the launcher, never in the game renderer.
+    void animateLauncherEntrance(LinearLayout root) {
+        for (int i = 0; i < root.getChildCount(); i++) {
+            View child = root.getChildAt(i);
+            child.setAlpha(0f);
+            child.setTranslationY(dp(12));
+            child.animate().alpha(1f).translationY(0f).setDuration(220)
+                    .setStartDelay(Math.min(i * 28L, 392L)).start();
+        }
     }
 
     void refresh() {
         load();
+        if (profileButton != null) profileButton.setText(profileLabel());
+        Option thermalOption = findOption("THERMAL_PACING");
+        if (thermalOption != null) thermalOption.pick = prefs().getBoolean("thermal_pacing", true) ? 1 : 0;
         for (Option o : options) {
+            if ("THERMAL_PACING".equals(o.key)) continue;
             String v = config.get(o.key);
             if ("RESOLUTION".equals(o.key) && v == null) {
                 String hh = config.get("NX_HANDHELD");
@@ -706,6 +1325,8 @@ public class Launcher extends Activity {
             Option o = (Option) v.getTag();
             Button b = (Button) v;
             b.setText(label(o));
+            b.setEnabled(!(profiled() && PerformanceProfiles.controls(o.key))
+                    && !("NX_MALI_LOW_SHADOWS".equals(o.key) && !"1".equals(valueOf("NX_SHADOWS"))));
             if ("NX_MALI_LOW_SHADOWS".equals(o.key)) {
                 Option shadows = findOption("NX_SHADOWS");
                 boolean enabled = shadows != null && "1".equals(shadows.values[shadows.pick]);
@@ -871,7 +1492,11 @@ public class Launcher extends Activity {
         dataDir().mkdirs();
         if (!dataDir().isDirectory()) return;
         load();
-        for (Option o : options) config.put(o.key, o.values[o.pick]);
+        config.remove("THERMAL_PACING");
+        if (manualEdit && prefs().getString("manual_graphics_snapshot", null) == null)
+            prefs().edit().putString("manual_graphics_snapshot", PerformanceProfiles.encode(
+                    PerformanceProfiles.snapshot(config))).apply();
+        for (Option o : options) if (!"THERMAL_PACING".equals(o.key)) config.put(o.key, o.values[o.pick]);
         final String res = config.get("RESOLUTION");
         if ("360p".equals(res)) {
             config.put("NX_HANDHELD", "1");
@@ -898,7 +1523,105 @@ public class Launcher extends Activity {
         final String preset = config.get("GRAPHICS");
         if ("low".equals(preset)) config.put("NX_LOD_BIAS", "1");
         else if ("medium".equals(preset)) config.put("NX_LOD_BIAS", "0.5");
+        String mode = profile();
+        if (PerformanceProfiles.MANUAL.equals(mode)) {
+            String saved = prefs().getString("manual_graphics_snapshot", null);
+            if (manualEdit) {
+                Map<String, String> snapshot = PerformanceProfiles.decode(saved);
+                if (snapshot.isEmpty()) snapshot = PerformanceProfiles.snapshot(config);
+                if (manualEditKey != null)
+                    PerformanceProfiles.updateManualValue(snapshot, manualEditKey, valueOf(manualEditKey));
+                prefs().edit().putString("manual_graphics_snapshot", PerformanceProfiles.encode(snapshot)).apply();
+                PerformanceProfiles.restore(config, snapshot);
+            } else if (saved != null) {
+                PerformanceProfiles.restore(config, PerformanceProfiles.decode(saved));
+            }
+        } else {
+            config.putAll(PerformanceProfiles.values(mode));
+            // Keep the established resolution aliases in sync with this profile.
+            String profileResolution = config.get("RESOLUTION");
+            String handheld = "1080p".equals(profileResolution) ? "0" : "1";
+            config.put("NX_HANDHELD", handheld);
+            config.put("resolution", profileResolution);
+            config.put("NX_RENDER_RES", profileResolution);
+            config.put("NX_RES", profileResolution);
+            if ("low".equals(config.get("GRAPHICS"))) config.put("NX_LOD_BIAS", "1");
+            else if ("medium".equals(config.get("GRAPHICS"))) config.put("NX_LOD_BIAS", "0.5");
+            else config.remove("NX_LOD_BIAS");
+        }
         writeConfig(new File(dataDir(), "config.txt"), config);
+    }
+
+    String profile() { return prefs().getString("graphics_profile", PerformanceProfiles.MANUAL); }
+
+    boolean profiled() { return !PerformanceProfiles.MANUAL.equals(profile()); }
+
+    String valueOf(String key) {
+        Option option = findOption(key);
+        return option == null ? null : option.values[option.pick];
+    }
+
+    String profileLabel() {
+        String mode = profile();
+        return t("Perfil gráfico: " + mode, "Graphics profile: " + mode);
+    }
+
+    void addProfileRow(LinearLayout root) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, dp(4), 0, dp(4));
+        TextView name = new TextView(this);
+        name.setText(t("Perfil gráfico", "Graphics profile"));
+        name.setTextColor(Color.WHITE);
+        name.setTextSize(17);
+        row.addView(name, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        profileButton = new Button(this);
+        profileButton.setAllCaps(false);
+        profileButton.setMinWidth(dp(180));
+        profileButton.setText(profileLabel());
+        row.addView(profileButton);
+        profileButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                chooseNextProfile();
+            }
+        });
+        root.addView(row);
+    }
+
+    void chooseNextProfile() {
+        String old = profile();
+        int next = 0;
+        for (int i = 0; i < PerformanceProfiles.MODES.length; i++)
+            if (PerformanceProfiles.MODES[i].equals(old)) next = (i + 1) % PerformanceProfiles.MODES.length;
+        String mode = PerformanceProfiles.MODES[next];
+        if (PerformanceProfiles.MANUAL.equals(old) && !PerformanceProfiles.MANUAL.equals(mode)) {
+            load();
+            prefs().edit().putString("manual_graphics_snapshot", PerformanceProfiles.encode(
+                    PerformanceProfiles.snapshot(config))).apply();
+        }
+        prefs().edit().putString("graphics_profile", mode).apply();
+        if (PerformanceProfiles.MANUAL.equals(mode)) {
+            String saved = prefs().getString("manual_graphics_snapshot", null);
+            if (saved != null) {
+                load();
+                PerformanceProfiles.restore(config, PerformanceProfiles.decode(saved));
+                writeConfig(new File(dataDir(), "config.txt"), config);
+            }
+        }
+        syncOptionsFromConfig();
+        save();
+        refresh();
+    }
+
+    void syncOptionsFromConfig() {
+        for (Option option : options) {
+            String value = config.get(option.key);
+            if ("RESOLUTION".equals(option.key) && value == null) value = config.get("resolution");
+            for (int i = 0; value != null && i < option.values.length; i++)
+                if (option.values[i].equals(value)) option.pick = i;
+        }
     }
 
     int dp(int v) { return Math.round(v * getResources().getDisplayMetrics().density); }
@@ -1090,8 +1813,26 @@ public class Launcher extends Activity {
         b.setAllCaps(false);
         b.setMinWidth(dp(180));
         b.setText(button);
-        b.setOnClickListener(click);
+        b.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { haptic(v); click.onClick(v); }
+        });
         row.addView(b);
         root.addView(row);
+    }
+
+    String optionDescription(String key) {
+        if ("RESOLUTION".equals(key)) return t("Resolución de renderizado del juego", "Game render resolution");
+        if ("NX_HUD_1080".equals(key)) return t("Nitidez de menús y textos", "Menu and text sharpness");
+        if ("NX_FSR".equals(key)) return t("Escalado para mejorar la nitidez", "Upscaling for a sharper image");
+        if ("NX_FPS_CAP".equals(key)) return t("Objetivo de fotogramas", "Frame-rate target");
+        if ("THERMAL_PACING".equals(key)) return t("Reduce el límite al calentarse; conserva los gráficos", "Lowers the frame cap when hot; keeps graphics unchanged");
+        if ("NX_ASYNC_PIPELINES".equals(key)) return t("Puede reducir tirones con efectos nuevos", "Can reduce hitches with new effects");
+        if ("NX_SHADOWS".equals(key)) return t("Desactivarlas puede mejorar el rendimiento", "Turning shadows off may improve performance");
+        if ("NX_SHOW_FPS".equals(key)) return t("Muestra los FPS durante el juego", "Show FPS while playing");
+        if (key.startsWith("NX_TOUCH")) return t("Ajusta los controles en pantalla", "Adjust the on-screen controls");
+        if ("GRAPHICS".equals(key)) return t("Calidad de texturas del juego", "Game texture quality");
+        if ("NX_NO_CROWD".equals(key)) return t("Reduce personajes de fondo", "Reduce background crowds");
+        if ("NX_DISABLE_BLOOM".equals(key)) return t("Efectos de brillo", "Glow post-processing effect");
+        return t("Ajuste del juego", "Game setting");
     }
 }

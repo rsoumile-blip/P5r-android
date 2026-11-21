@@ -61,6 +61,12 @@ foreach ($lib in $extraLibs) {
 # rest, and the manifest copy names it.
 $manifest = "$root\games\$Game\AndroidManifest.xml"
 $resZips = @("$out\res.zip")
+$gameRes = "$root\games\$Game\res"
+if (Test-Path $gameRes) {
+    & "$bt\aapt2.exe" compile --dir $gameRes -o "$out\game-res.zip"
+    if ($LASTEXITCODE) { throw "game resources failed to compile" }
+    $resZips += "$out\game-res.zip"
+}
 $iconRes = if (Test-Path "$root\games\$Game\icon\res") { "$root\games\$Game\icon\res" } else { "$priv\icon\res" }
 if (Test-Path $iconRes) {
     & "$bt\aapt2.exe" compile --dir $iconRes -o "$out\icon.zip"

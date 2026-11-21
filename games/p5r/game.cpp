@@ -114,8 +114,18 @@ int forced_fps() {
 }
 
 int cap_fps() {
-    static const int fps = env_int("NX_FPS_CAP", 30) >= 60 ? 60 : 30;
-    return fps;
+    static const int configured = env_int("NX_FPS_CAP", 30) >= 60 ? 60 : 30;
+    static int thermal_cap = 0;
+    static unsigned polls = 0;
+    if ((polls++ & 63u) == 0) {
+        int value = 0;
+        if (FILE* f = plat::fopen_utf8(plat::data_root() + "/thermal_fps", "rb")) {
+            if (std::fscanf(f, "%d", &value) != 1) value = 0;
+            std::fclose(f);
+        }
+        thermal_cap = value >= 5 && value < configured ? value : 0;
+    }
+    return thermal_cap ? thermal_cap : configured;
 }
 
 bool auto_fps() {
@@ -128,10 +138,14 @@ bool g_field_scene = false;  // scan_tasks: a scripted field scene (EventSkip, n
 
 // The lowest target: in scenes NX_P5R_SCENE_FPS (10), in field scenes a third of the cap, elsewhere NX_P5R_MIN_FPS
 // (30); the number in the data folder's
-// p5r_fps file overrides both (looked at every 64 calls).
+// p5r_fps file overrides both (looked at every 64 calls). The launcher's thermal_pacing option writes thermal_fps
+// (15 at severe, 10 at critical): it lowers the cap without changing graphics quality.
 int min_fps() {
-    static const int base = std::clamp(env_int("NX_P5R_MIN_FPS", 30), 5, cap_fps());
-    static const int scene = std::clamp(env_int("NX_P5R_SCENE_FPS", 10), 5, cap_fps());
+    const int cap = cap_fps();
+    static const int configured_base = std::clamp(env_int("NX_P5R_MIN_FPS", 30), 5, 60);
+    static const int configured_scene = std::clamp(env_int("NX_P5R_SCENE_FPS", 10), 5, 60);
+    const int base = std::min(configured_base, cap);
+    const int scene = std::min(configured_scene, cap);
     static int live = 0, calls = 0;
     if (calls++ % 64 == 0) {
         int v = 0;
@@ -139,7 +153,7 @@ int min_fps() {
             if (std::fscanf(f, "%d", &v) != 1) v = 0;
             std::fclose(f);
         }
-        v = v ? std::clamp(v, 5, cap_fps()) : 0;
+        v = v ? std::min(std::clamp(v, 5, 60), cap_fps()) : 0;
         if (v != live) log("p5r: lowest target frame rate %s (%s)", v ? std::to_string(v).c_str() : "back to the default",
                            v ? "p5r_fps file" : "file removed");
         live = v;
