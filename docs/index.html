@@ -54,17 +54,19 @@
       <h2>What’s in the launcher</h2>
       <div class="grid">
         <article class="card"><h3>Controller navigation</h3><p>Navigate the launcher with a controller: move focus, select settings, switch pages, return, and launch. Gameplay input remains handled by the game.</p></article>
-        <article class="card"><h3>Thermal pacing</h3><p>Optional pacing responds to Android thermal status by temporarily lowering the frame cap at severe heat. It restores the normal cap as the device cools and leaves graphics settings alone.</p></article>
-        <article class="card"><h3>Smart performance profiles</h3><p>Choose a preset or return to Manual and adjust supported graphics and performance settings.</p></article>
+        <article class="card"><h3>Thermal pacing</h3><p>Optional pacing lowers the cap to 15 fps at severe heat and 10 fps at critical heat, then restores the configured cap as the device cools. It leaves graphics settings alone.</p></article>
+        <article class="card"><h3>Smart performance profiles</h3><p>Choose Performance, Balanced, or Quality, or return to Manual. Manual restores your saved graphics settings.</p></article>
+        <article class="card"><h3>Play History</h3><p>See your latest session’s duration, date, and selected graphics profile.</p></article>
+        <article class="card"><h3>Make the launcher yours</h3><p>Pick a background, turn on gentle background motion, toggle the tab sound, and optionally enable haptics. The refreshed red-and-black look has lightweight animations and an updated app icon.</p></article>
         <article class="card"><h3>Built for Android</h3><p>Native arm64 execution, Vulkan rendering, touch controls, gamepad support, and on-device shader preparation.</p></article>
       </div>
     </section>
     <section id="release">
       <h2>Latest NCE build</h2>
-      <div class="release"><h3>P5R Android 0.5.13 · NCE APK</h3><p>This build includes launcher controller navigation and thermal pacing. Thermal pacing reduces the frame cap only when Android reports severe heat; it does not promise higher FPS or remove all stutter.</p><p><a href="https://github.com/Brandon04Gonzalez/p5r-android/releases/latest/download/p5r.apk">Download p5r.apk from GitHub Releases</a></p></div>
+      <div class="release"><h3>P5R Android 0.5.13 · NCE APK</h3><p>This build includes launcher controller navigation, thermal pacing, Play History, Smart Performance Profiles, launcher personalization, the refreshed interface and icon, and light animations. Thermal pacing only lowers the frame cap at high thermal status; it does not promise higher FPS or remove all stutter.</p><p><a href="https://github.com/rsoumile-blip/P5r-android/releases/latest/download/p5r.apk">Download p5r.apk from GitHub Releases</a></p></div>
     </section>
-    <section><h2>Requirements</h2><p>64-bit Android device, Android 10 or newer, Vulkan 1.1, and your own legally dumped Persona 5 Royal 1.0.0 game and keys. Performance varies by device; Adreno 610-class GPUs are a low-end target.</p><p>Read the <a href="https://github.com/Brandon04Gonzalez/p5r-android#install">setup guide</a> before installing.</p></section>
+    <section><h2>Requirements</h2><p>64-bit Android device, Android 10 or newer, Vulkan 1.1, and your own legally dumped Persona 5 Royal 1.0.0 game and keys. Performance varies by device; Adreno 610-class GPUs are a low-end target.</p><p>Read the <a href="https://github.com/rsoumile-blip/P5r-android#install">setup guide</a> before installing.</p></section>
   </main>
-  <footer><div class="wrap">Licensed under MIT. Persona 5 Royal is © ATLUS / © SEGA. Fan project; not affiliated with or endorsed by ATLUS, SEGA, or Nintendo. <a href="https://github.com/Brandon04Gonzalez/p5r-android/blob/main/LICENSE">License</a> · <a href="https://github.com/Brandon04Gonzalez/p5r-android">Source repository</a></div></footer>
+  <footer><div class="wrap">Licensed under MIT. Persona 5 Royal is © ATLUS / © SEGA. Fan project; not affiliated with or endorsed by ATLUS, SEGA, or Nintendo. <a href="https://github.com/rsoumile-blip/P5r-android/blob/main/LICENSE">License</a> · <a href="https://github.com/rsoumile-blip/P5r-android">Source repository</a></div></footer>
 </body>
 </html>
