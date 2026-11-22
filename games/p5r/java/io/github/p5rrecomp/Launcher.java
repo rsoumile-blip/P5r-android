@@ -128,7 +128,7 @@ public class Launcher extends Activity {
     int lastThermalStatus = -1;
     boolean manualEdit;
     String manualEditKey;
-    static final int PICK_ZIP = 1, PICK_FOLDER = 2, PICK_GAME = 3, PICK_KEYS = 4, PICK_ICON = 5, PREPARE = 6, PICK_CPK = 7, PICK_DRIVER = 8;
+    static final int PICK_ZIP = 1, PICK_FOLDER = 2, PICK_GAME = 3, PICK_KEYS = 4, PICK_ICON = 5, PREPARE = 6, PICK_CPK = 7, PICK_DRIVER = 8, PICK_MOD = 9;
 
     String t(String spanish, String english) { return Lang.t(spanish, english); }
 
@@ -644,6 +644,24 @@ public class Launcher extends Activity {
         root.addView(saves);
         saves.setTag(3);
 
+        LinearLayout modsRow = new LinearLayout(this);
+        modsRow.setOrientation(LinearLayout.HORIZONTAL);
+        modsRow.setGravity(Gravity.CENTER_VERTICAL);
+        modsRow.setPadding(0, dp(4), 0, dp(4));
+        TextView modsName = new TextView(this);
+        modsName.setText(t("Mods", "Mods"));
+        modsName.setTextColor(Color.WHITE); modsName.setTextSize(17);
+        modsRow.addView(modsName, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        Button installModButton = new Button(this); installModButton.setAllCaps(false);
+        installModButton.setText(t("Instalar", "Install"));
+        modsRow.addView(installModButton);
+        Button modsButton = new Button(this); modsButton.setAllCaps(false);
+        modsButton.setText(t("Administrar", "Manage"));
+        modsRow.addView(modsButton);
+        installModButton.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { pick(PICK_MOD, "application/zip", false); }});
+        modsButton.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { showModManager(); }});
+        root.addView(modsRow); modsRow.setTag(3); subSections.put(modsRow, 0);
+
         // Translation CPK import
         LinearLayout transRow = new LinearLayout(this);
         transRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -851,7 +869,7 @@ public class Launcher extends Activity {
                 haptic(v); if (section >= 0) { playTabSound(); showLauncherSection(section); } else if (play != null) play.performClick();
             }});
         }
-        TextView version = new TextView(this); version.setText("v0.5.13-launcher-a18");
+        TextView version = new TextView(this); version.setText("v0.5.14");
         version.setTextColor(0xFFB8A6AD); version.setTextSize(10); version.setPadding(0,dp(8),0,0);
         side.addView(version);
         return side;
@@ -860,7 +878,7 @@ public class Launcher extends Activity {
     void launchTrackedGame() {
         prefs().edit().putLong("history_pending_start", System.currentTimeMillis())
                 .putString("history_pending_profile", profile()).apply();
-        startActivity(new Intent(this, android.app.NativeActivity.class));
+        startActivity(new Intent(this, P5RGameActivity.class));
     }
 
     void finishTrackedSession() {
@@ -1407,6 +1425,10 @@ public class Launcher extends Activity {
             importCpk(data.getData());
             return;
         }
+        if (request == PICK_MOD) {
+            importMod(data.getData());
+            return;
+        }
         try {
             SaveFiles.Result r = request == PICK_ZIP ? SaveFiles.importZip(getContentResolver(), data.getData())
                     : request == PICK_FOLDER ? SaveFiles.importTree(getContentResolver(), data.getData()) : null;
@@ -1737,6 +1759,137 @@ public class Launcher extends Activity {
             Toast.makeText(this, t("Error al importar CPK: " + e.getMessage(),
                     "Error importing CPK: " + e.getMessage()), Toast.LENGTH_LONG).show();
         }
+    }
+
+    void showModManager() {
+        if (!hasAccess()) { askAccess(); return; }
+        final File mods = new File(dataDir(), "mods");
+        if (!mods.isDirectory()) mods.mkdirs();
+        File[] children = mods.listFiles();
+        final List<File> entries = new ArrayList<>();
+        if (children != null) {
+            for (File child : children) {
+                String name = child.getName();
+                if (child.isDirectory() && !name.startsWith(".") &&
+                        new File(child, "romfs").isDirectory()) entries.add(child);
+            }
+        }
+        java.util.Collections.sort(entries, new java.util.Comparator<File>() {
+            @Override public int compare(File a, File b) { return a.getName().compareToIgnoreCase(b.getName()); }
+        });
+        if (entries.isEmpty()) {
+            tell(t("Administrador de mods", "Mod manager"),
+                    Lang.f("No hay mods instalados. Coloca cada mod en %s\\mods\\<Nombre>\\romfs.",
+                            "No mods found. Put each mod in %s\\mods\\<Name>\\romfs.", dataDir().getPath()));
+            return;
+        }
+        final String[] labels = new String[entries.size()];
+        for (int i = 0; i < entries.size(); i++) {
+            String name = entries.get(i).getName();
+            boolean enabled = !name.startsWith("_");
+            labels[i] = (enabled ? "✓  " : "○  ") + (enabled ? name : name.substring(1)) +
+                    t(enabled ? "  (activado)" : "  (desactivado)", enabled ? "  (enabled)" : "  (disabled)");
+        }
+        new AlertDialog.Builder(this).setTitle(t("Mods · toca para activar/desactivar", "Mods · tap to enable/disable"))
+                .setItems(labels, new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface dialog, int which) {
+                        File old = entries.get(which);
+                        String name = old.getName();
+                        String nextName = name.startsWith("_") ? name.substring(1) : "_" + name;
+                        File next = new File(mods, nextName);
+                        if (next.exists() || !old.renameTo(next)) {
+                            tell(t("No se pudo cambiar el mod", "Could not change mod"), name);
+                            return;
+                        }
+                        Toast.makeText(Launcher.this,
+                                t("Cambio aplicado. Cierra y vuelve a abrir el juego.", "Change saved. Restart the game to apply it."),
+                                Toast.LENGTH_LONG).show();
+                        showModManager();
+                    }
+                }).setNegativeButton(t("Cerrar", "Close"), null).show();
+    }
+
+    void importMod(Uri uri) {
+        File temp = new File(getCacheDir(), "mod_import_" + System.currentTimeMillis());
+        try {
+            if (!temp.mkdirs()) throw new java.io.IOException("Cannot create temporary folder");
+            int count = 0;
+            long total = 0;
+            try (InputStream raw = getContentResolver().openInputStream(uri);
+                 java.util.zip.ZipInputStream zip = new java.util.zip.ZipInputStream(raw)) {
+                if (raw == null) throw new java.io.IOException("Cannot open archive");
+                java.util.zip.ZipEntry entry;
+                byte[] buffer = new byte[65536];
+                while ((entry = zip.getNextEntry()) != null) {
+                    if (++count > 100000) throw new java.io.IOException("Archive contains too many files");
+                    String relative = entry.getName().replace('\\', '/');
+                    File destination = new File(temp, relative);
+                    String rootPath = temp.getCanonicalPath() + File.separator;
+                    if (!destination.getCanonicalPath().startsWith(rootPath))
+                        throw new java.io.IOException("Unsafe path in archive");
+                    if (entry.isDirectory()) destination.mkdirs();
+                    else {
+                        File parent = destination.getParentFile();
+                        if (parent != null) parent.mkdirs();
+                        try (OutputStream out = new FileOutputStream(destination)) {
+                            int n;
+                            while ((n = zip.read(buffer)) > 0) {
+                                total += n;
+                                if (total > 8L * 1024 * 1024 * 1024) throw new java.io.IOException("Archive exceeds 8 GB extracted size limit");
+                                out.write(buffer, 0, n);
+                            }
+                        }
+                    }
+                    zip.closeEntry();
+                }
+            }
+            File romfs = findRomfs(temp, 0);
+            if (romfs == null) throw new java.io.IOException("No romfs folder found. Use a LayeredFS mod ZIP containing romfs/.");
+            String base = displayName(uri).replaceFirst("(?i)\\.zip$", "").replaceAll("[^A-Za-z0-9._ -]", "_").trim();
+            if (base.isEmpty() || base.startsWith("_") || base.startsWith(".")) base = "ImportedMod";
+            File mods = new File(dataDir(), "mods"); mods.mkdirs();
+            String name = base;
+            for (int suffix = 2; new File(mods, name).exists(); suffix++) name = base + " (" + suffix + ")";
+            File target = new File(new File(mods, name), "romfs");
+            if (!copyFolder(romfs, target)) throw new java.io.IOException("Could not copy mod files");
+            Toast.makeText(this, Lang.f("Mod instalado: %s. Reinicia el juego para aplicarlo.",
+                    "Mod installed: %s. Restart the game to apply it.", name), Toast.LENGTH_LONG).show();
+        } catch (Exception e) {
+            tell(t("No se pudo instalar el mod", "Could not install mod"), String.valueOf(e.getMessage()));
+        } finally {
+            deleteFolder(temp);
+        }
+    }
+
+    File findRomfs(File dir, int depth) {
+        if (depth > 10) return null;
+        File[] files = dir.listFiles();
+        if (files == null) return null;
+        for (File file : files) if (file.isDirectory() && "romfs".equalsIgnoreCase(file.getName())) return file;
+        for (File file : files) if (file.isDirectory()) {
+            File found = findRomfs(file, depth + 1);
+            if (found != null) return found;
+        }
+        return null;
+    }
+
+    boolean copyFolder(File source, File target) throws java.io.IOException {
+        if (!target.mkdirs() && !target.isDirectory()) return false;
+        File[] files = source.listFiles();
+        if (files == null) return false;
+        for (File file : files) {
+            File to = new File(target, file.getName());
+            if (file.isDirectory()) { if (!copyFolder(file, to)) return false; }
+            else try (InputStream in = new java.io.FileInputStream(file)) { copy(in, to); }
+        }
+        return true;
+    }
+
+    void deleteFolder(File dir) {
+        if (dir == null || !dir.exists()) return;
+        File[] files = dir.listFiles();
+        if (files != null) for (File file : files) deleteFolder(file);
+        dir.delete();
     }
 
     void exportLogs() {
