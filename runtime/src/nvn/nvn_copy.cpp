@@ -276,6 +276,7 @@ void replay_clear_texture(VkCommandBuffer cb, const Cmd& c, const CmdList& list)
         uint32_t layer = is3d ? 0 : std::min(uint32_t(std::max(r[2], 0)) + info.view.min_layer, img->layers - 1);
         VkImageSubresourceRange range{img->aspect, level, 1, layer, is3d ? 1u : std::clamp<uint32_t>(uint32_t(r[5]), 1, img->layers - layer)};
         VkClearColorValue v{{c.f[0], c.f[1], c.f[2], c.f[3]}};
+        clamp_ufloat_clear(v, info.view.format ? info.view.format : img->nvn_format);
         transition(cb, *img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
         p_vkCmdClearColorImage(cb, img->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &v, 1, &range);
         img->texels = true;

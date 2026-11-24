@@ -23,6 +23,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <map>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -67,6 +71,7 @@ const Named kP5R[] = {
     {"RIGHT", {0.185f, 0.40f, 0.048f, kRight, touch_label(kGlyphRight)}},
     {"L3", {0.055f, 0.58f, 0.046f, kStickL, touch_label(kGlyphL, kGlyph3)}},
     {"R3", {0.740f, 0.82f, 0.046f, kStickR, touch_label(kGlyphR, kGlyph3)}},
+    {"EDIT", {0.680f, 0.07f, 0.045f, kTouchEdit, touch_label(kGlyphSettings)}},
 };
 
 struct Layout {
@@ -92,11 +97,22 @@ const Layout* layout() {
     return l;
 }
 
-// NX_TOUCH_LAYOUT=A:x,y,r;B:...: the launcher's place for `name` (x, y across the screen, r a fraction of its height).
-bool layout_entry(const char* name, float& x, float& y, float& r) {
-    const char* e = std::getenv("NX_TOUCH_LAYOUT");
-    if (!e) return false;
-    const std::string all = e;
+struct TouchSettings {
+    std::vector<TouchButton> buttons;
+    float stick_x = 0.15f, stick_y = 0.76f, stick_r = kStickRing;
+    float camera_x = 0.70f, camera_y = 0.45f, camera_r = kStickRing;
+    float opacity = 1.0f;
+    bool enabled = true, hidden = false, mirrored = false, fixed_sticks = false;
+    bool stick_visible = true, camera_visible = true;
+};
+
+std::mutex g_settings_mutex;
+std::shared_ptr<TouchSettings> g_settings;
+std::vector<std::shared_ptr<TouchSettings>> g_old_settings;  // pointers returned to the renderer stay valid after an edit
+std::string g_signature;
+uint64_t g_last_settings_read = 0;
+
+bool layout_entry(const std::string& all, const char* name, float& x, float& y, float& r) {
     const size_t len = std::strlen(name);
     size_t pos = 0;
     while (pos < all.size()) {
@@ -115,89 +131,176 @@ bool layout_entry(const char* name, float& x, float& y, float& r) {
     return false;
 }
 
-int env_int(const char* name, int fallback) {
-    const char* e = std::getenv(name);
-    return e && *e ? std::atoi(e) : fallback;
+void env_values(std::map<std::string, std::string>& values) {
+    for (const char* key : {"NX_TOUCH_LAYOUT", "NX_TOUCH_HIDE_BUTTONS", "NX_TOUCH_FIXED_STICKS", "NX_TOUCH_SHOW",
+                            "NX_TOUCH_HIDE", "NX_TOUCH_MIRROR", "NX_TOUCH_SIZE", "NX_TOUCH_OPACITY"}) {
+        if (const char* e = std::getenv(key)) values[key] = e;
+    }
 }
 
-// The layout as the launcher set it (config.txt, which becomes the environment): NX_TOUCH_LAYOUT replaces the positions
-// and radii of the named buttons, NX_TOUCH_SIZE (50..160, percent) scales every radius. Read once.
-const std::vector<TouchButton>& buttons() {
-    static const std::vector<TouchButton> v = [] {
-        std::vector<TouchButton> out;
-        const Layout* l = layout();
-        if (!l) return out;
-        for (size_t k = 0; k < l->count; k++) {
-            out.push_back(l->buttons[k].b);
-            layout_entry(l->buttons[k].name, out[k].x, out[k].y, out[k].r);
+std::string value(const std::map<std::string, std::string>& values, const char* key, const char* fallback = "") {
+    auto it = values.find(key);
+    return it == values.end() ? fallback : it->second;
+}
+
+bool listed(const std::string& names, const char* name) {
+    const size_t len = std::strlen(name);
+    size_t pos = 0;
+    while (pos < names.size()) {
+        size_t end = names.find(';', pos);
+        if (end == std::string::npos) end = names.size();
+        if (end - pos == len && names.compare(pos, len, name) == 0) return true;
+        pos = end + 1;
+    }
+    return false;
+}
+
+void refresh_settings() {
+    const uint64_t now = monotonic_ns();
+    {
+        std::lock_guard lock(g_settings_mutex);
+        if (g_settings && (now < g_last_settings_read || now - g_last_settings_read < 250'000'000)) return;
+        g_last_settings_read = now;
+    }
+
+    std::map<std::string, std::string> values;
+    env_values(values);
+#if defined(__ANDROID__)
+    const std::string root = data_root();
+    if (!root.empty()) {
+        std::ifstream f(root + "/config.txt");
+        std::string line;
+        while (std::getline(f, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            const size_t eq = line.find('=');
+            if (eq == std::string::npos) continue;
+            const std::string key = line.substr(0, eq);
+            if (key.rfind("NX_TOUCH_", 0) == 0) values[key] = line.substr(eq + 1);
         }
-        float scale = float(std::clamp(env_int("NX_TOUCH_SIZE", 100), 50, 160)) / 100.0f;
-        for (auto& b : out) b.r *= scale;
-        return out;
-    }();
-    return v;
+    }
+#endif
+
+    std::string signature;
+    for (const char* key : {"NX_TOUCH_LAYOUT", "NX_TOUCH_HIDE_BUTTONS", "NX_TOUCH_FIXED_STICKS", "NX_TOUCH_SHOW",
+                            "NX_TOUCH_HIDE", "NX_TOUCH_MIRROR", "NX_TOUCH_SIZE", "NX_TOUCH_OPACITY"}) {
+        signature += key;
+        signature += '=';
+        signature += value(values, key);
+        signature += '\n';
+    }
+    std::lock_guard lock(g_settings_mutex);
+    if (g_settings && signature == g_signature) return;
+
+    auto out = std::make_shared<TouchSettings>();
+    const std::string layout_value = value(values, "NX_TOUCH_LAYOUT");
+    const std::string hidden_buttons = value(values, "NX_TOUCH_HIDE_BUTTONS");
+    const Layout* l = layout();
+    if (l) {
+        for (size_t k = 0; k < l->count; k++) {
+            out->buttons.push_back(l->buttons[k].b);
+            layout_entry(layout_value, l->buttons[k].name, out->buttons.back().x, out->buttons.back().y,
+                         out->buttons.back().r);
+            out->buttons.back().visible = l->buttons[k].b.button == kTouchEdit ||
+                                          !listed(hidden_buttons, l->buttons[k].name);
+        }
+    }
+    int size = std::atoi(value(values, "NX_TOUCH_SIZE", "100").c_str());
+    float scale = float(std::clamp(size, 50, 160)) / 100.0f;
+    for (auto& b : out->buttons) b.r *= scale;
+
+    out->stick_x = l ? l->stick_x : 0.15f;
+    out->stick_y = l ? l->stick_y : 0.72f;
+    out->stick_r = kStickRing;
+    out->mirrored = value(values, "NX_TOUCH_MIRROR") == "1";
+    if (out->mirrored) out->stick_x = 1 - out->stick_x;
+    layout_entry(layout_value, "STICK", out->stick_x, out->stick_y, out->stick_r);
+    out->camera_x = 0.70f, out->camera_y = 0.45f, out->camera_r = kStickRing;
+    layout_entry(layout_value, "RSTICK", out->camera_x, out->camera_y, out->camera_r);
+    out->stick_visible = !listed(hidden_buttons, "STICK");
+    out->camera_visible = !listed(hidden_buttons, "RSTICK");
+
+    const std::string show = value(values, "NX_TOUCH_SHOW", "1");
+    out->enabled = !(show == "0");
+    const std::string hide = value(values, "NX_TOUCH_HIDE");
+    const std::string opacity = value(values, "NX_TOUCH_OPACITY");
+    out->hidden = hide == "1" || show == "2" || show == "hide" || show == "hidden" || opacity == "0";
+    out->fixed_sticks = value(values, "NX_TOUCH_FIXED_STICKS") == "1";
+    int alpha = std::atoi(opacity.empty() ? "85" : opacity.c_str());
+    out->opacity = float(std::clamp(alpha, 10, 100)) / 85.0f;
+
+    if (g_settings) g_old_settings.push_back(g_settings);
+    g_settings = std::move(out);
+    g_signature = std::move(signature);
 }
 
 }  // namespace
 
 // NX_TOUCH_SHOW=0 (launcher: On-screen buttons off): nothing is drawn and touches are ignored.
 bool touch_enabled() {
-    static const bool on = [] {
-        const char* e = std::getenv("NX_TOUCH_SHOW");
-        return !(e && e[0] == '0');
-    }();
-    return on;
+    refresh_settings();
+    std::lock_guard lock(g_settings_mutex);
+    return g_settings->enabled;
 }
 
 // NX_TOUCH_HIDE=1: on-screen controls are invisible (not drawn), but touch inputs continue to register.
 bool touch_hidden() {
-    static const bool h = [] {
-        const char* e_hide = std::getenv("NX_TOUCH_HIDE");
-        if (e_hide && e_hide[0] == '1') return true;
-        const char* e_show = std::getenv("NX_TOUCH_SHOW");
-        if (e_show && (e_show[0] == '2' || std::strcmp(e_show, "hide") == 0 || std::strcmp(e_show, "hidden") == 0)) return true;
-        const char* e_op = std::getenv("NX_TOUCH_OPACITY");
-        if (e_op && std::strcmp(e_op, "0") == 0) return true;
-        return false;
-    }();
-    return h;
+    refresh_settings();
+    std::lock_guard lock(g_settings_mutex);
+    return g_settings->hidden;
 }
 
 // NX_TOUCH_MIRROR=1 (left-handed): the stick takes the right half of the screen instead of the left.
 bool touch_mirrored() {
-    static const bool on = [] {
-        const char* e = std::getenv("NX_TOUCH_MIRROR");
-        return e && e[0] == '1';
-    }();
-    return on;
+    refresh_settings();
+    std::lock_guard lock(g_settings_mutex);
+    return g_settings->mirrored;
+}
+
+bool touch_fixed_sticks() {
+    refresh_settings();
+    std::lock_guard lock(g_settings_mutex);
+    return g_settings->fixed_sticks;
+}
+
+bool touch_stick_visible() {
+    refresh_settings();
+    std::lock_guard lock(g_settings_mutex);
+    return g_settings->stick_visible;
+}
+
+bool touch_camera_stick_visible() {
+    refresh_settings();
+    std::lock_guard lock(g_settings_mutex);
+    return g_settings->camera_visible;
 }
 
 // NX_TOUCH_OPACITY (10..100, default 85): the drawn buttons' brightness relative to the original look.
 float touch_opacity_scale() {
-    static const float s = float(std::clamp(env_int("NX_TOUCH_OPACITY", 85), 10, 100)) / 85.0f;
-    return s;
+    refresh_settings();
+    std::lock_guard lock(g_settings_mutex);
+    return g_settings->opacity;
 }
 
 const TouchButton* touch_buttons(size_t& count) {
-    count = buttons().size();
-    return count ? buttons().data() : nullptr;
+    refresh_settings();
+    std::lock_guard lock(g_settings_mutex);
+    count = g_settings->buttons.size();
+    return count ? g_settings->buttons.data() : nullptr;
 }
 
 bool touch_right_stick() { return layout() && layout()->right_stick; }
 
 // The stick's ring at rest: the layout's place (NX_TOUCH_MIRROR=1: mirrored), or the launcher's (STICK:x,y,r).
 void touch_stick_rest(float& x, float& y, float& r) {
-    struct Rest {
-        float x, y, r;
-    };
-    static const Rest rest = [] {
-        const Layout* l = layout();
-        Rest v{l ? l->stick_x : 0.15f, l ? l->stick_y : 0.72f, kStickRing};
-        if (touch_mirrored()) v.x = 1 - v.x;
-        layout_entry("STICK", v.x, v.y, v.r);
-        return v;
-    }();
-    x = rest.x, y = rest.y, r = rest.r;
+    refresh_settings();
+    std::lock_guard lock(g_settings_mutex);
+    x = g_settings->stick_x, y = g_settings->stick_y, r = g_settings->stick_r;
+}
+
+void touch_camera_stick_rest(float& x, float& y, float& r) {
+    refresh_settings();
+    std::lock_guard lock(g_settings_mutex);
+    x = g_settings->camera_x, y = g_settings->camera_y, r = g_settings->camera_r;
 }
 
 bool touch_stick_side(float x) {
@@ -216,6 +319,7 @@ uint64_t touch_hit(float x, float y, float aspect) {
     constexpr uint64_t kDpadMask = kUp | kDown | kLeft | kRight;
     uint64_t dpad_hits = 0;
     for (size_t k = 0; k < n; k++) {
+        if (!b[k].visible) continue;
         float d = std::hypot((x - b[k].x) * aspect, y - b[k].y) / b[k].r;
         if ((b[k].button & kDpadMask) && d < 1.45f) dpad_hits |= b[k].button;
         if (d < 1.25f && d < best_d) best = b[k].button, best_d = d;  // a little past the drawn edge still counts
@@ -234,10 +338,14 @@ size_t touch_overlay(OverlayShape* out, size_t max) {
     if (!demo) return 0;
     size_t n = 0, k = 0;
     const TouchButton* b = touch_buttons(n);
-    for (; k < n && k < max; k++) out[k] = {b[k].x, b[k].y, b[k].r, 0.22f, b[k].label};
+    for (size_t i = 0; i < n && k < max; i++)
+        if (b[i].visible) out[k++] = {b[i].x, b[i].y, b[i].r, 0.22f, b[i].label};
     float sx, sy, sr;
     touch_stick_rest(sx, sy, sr);
     if (k < max) out[k++] = {sx, sy, sr, 0.10f};  // where the stick usually goes
+    float cx, cy, cr;
+    touch_camera_stick_rest(cx, cy, cr);
+    if (touch_fixed_sticks() && touch_right_stick() && k < max) out[k++] = {cx, cy, cr, 0.10f};
     return k;
 }
 #endif

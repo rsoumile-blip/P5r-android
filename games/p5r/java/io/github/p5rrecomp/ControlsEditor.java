@@ -21,29 +21,31 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * Drag the on-screen controls where you want them; the game draws them there (NX_TOUCH_LAYOUT in config.txt, read by
- * runtime/src/touch_layout.cpp). The d-pad and the A B X Y diamond move as a whole; L, ZL, R, ZR, - and + one by one;
- * the stick's ring too (STICK: the stick takes the touches of the half of the screen it is on). Controls that touch
- * each other are drawn red. Full screen like the game (same theme and system bars hidden the same way), so the
- * fractions of the screen mean the same.
+ * Drag the on-screen controls where you want them; tap one to hide or restore it. The d-pad and face-button diamond
+ * move as groups. Both stick anchors can be positioned separately. Changes are written to config.txt and the native
+ * touch overlay reloads them while the game is paused behind this editor.
  */
 public class ControlsEditor extends Activity {
     // The game's layout (a copy of kP5R and the stick's place in runtime/src/touch_layout.cpp): name, label, x, y
     // (0..1 across the landscape screen), radius (a fraction of its height), group (moved together).
     static final String[] NAMES = {"A", "B", "X", "Y", "R", "ZR", "L", "ZL", "MINUS", "PLUS", "UP", "DOWN", "LEFT",
-            "RIGHT", "STICK", "L3", "R3"};
-    static final String[] LABELS = {"A", "B", "X", "Y", "R", "ZR", "L", "ZL", "−", "+", "▲", "▼", "◀", "▶", "", "L3", "R3"};
+            "RIGHT", "STICK", "L3", "R3", "RSTICK", "EDIT"};
+    static final String[] LABELS = {"A", "B", "X", "Y", "R", "ZR", "L", "ZL", "−", "+", "▲", "▼", "◀", "▶", "", "L3", "R3",
+            "Camera", "⚙"};
     static final float[][] DEFAULTS = {
             {0.940f, 0.66f, 0.068f}, {0.875f, 0.80f, 0.068f}, {0.875f, 0.52f, 0.068f}, {0.810f, 0.66f, 0.068f},
             {0.945f, 0.08f, 0.052f}, {0.945f, 0.24f, 0.052f}, {0.055f, 0.08f, 0.052f}, {0.055f, 0.24f, 0.052f},
             {0.440f, 0.07f, 0.045f}, {0.560f, 0.07f, 0.045f},
             {0.135f, 0.31f, 0.048f}, {0.135f, 0.49f, 0.048f}, {0.085f, 0.40f, 0.048f}, {0.185f, 0.40f, 0.048f},
             {0.150f, 0.76f, 0.120f},
-            {0.055f, 0.58f, 0.046f}, {0.740f, 0.82f, 0.046f}};
-    static final int[] GROUP = {0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 7, 7, 7, 8, 9, 10};
+            {0.055f, 0.58f, 0.046f}, {0.740f, 0.82f, 0.046f},
+            {0.700f, 0.45f, 0.120f}, {0.680f, 0.07f, 0.045f}};
+    static final int[] GROUP = {0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 7, 7, 7, 8, 9, 10, 11, 12};
     static final int STICK = 14;
+    static final int EDIT = 18;
 
     float[][] pos = new float[NAMES.length][];
+    boolean[] hidden = new boolean[NAMES.length];
     float sizeScale = 1;
     EditorView view;
 
@@ -61,6 +63,7 @@ public class ControlsEditor extends Activity {
         }
         reset("1".equals(config.get("NX_TOUCH_MIRROR")));
         parse(config.get("NX_TOUCH_LAYOUT"));
+        parseHidden(config.get("NX_TOUCH_HIDE_BUTTONS"));
 
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(Color.rgb(20, 4, 6));
@@ -71,8 +74,8 @@ public class ControlsEditor extends Activity {
         middle.setOrientation(LinearLayout.VERTICAL);
         middle.setGravity(Gravity.CENTER_HORIZONTAL);
         TextView help = new TextView(this);
-        help.setText(t("Arrastra los controles a donde quieras.\nLa cruceta y A B X Y se mueven juntos. En rojo: se tocan.",
-                "Drag the controls where you want them.\nThe d-pad and A B X Y move together. Red: they touch."));
+        help.setText(t("Arrastra para mover. Toca un control para ocultarlo o mostrarlo.\nLa cruceta y A B X Y se mueven juntos. En rojo: se tocan.",
+                "Drag to move. Tap a control to hide or show it.\nThe d-pad and A B X Y move together. Red: they touch."));
         help.setTextColor(Color.rgb(230, 230, 230));
         help.setTextSize(15);
         help.setGravity(Gravity.CENTER);
@@ -87,6 +90,7 @@ public class ControlsEditor extends Activity {
             @Override
             public void onClick(View v) {
                 reset("1".equals(Launcher.readConfig(configFile()).get("NX_TOUCH_MIRROR")));
+                hidden = new boolean[NAMES.length];
                 view.invalidate();
             }
         });
@@ -99,8 +103,12 @@ public class ControlsEditor extends Activity {
             public void onClick(View v) {
                 Map<String, String> config = Launcher.readConfig(configFile());
                 config.put("NX_TOUCH_LAYOUT", serialize());
+                String hiddenNames = serializeHidden();
+                if (hiddenNames.isEmpty()) config.remove("NX_TOUCH_HIDE_BUTTONS");
+                else config.put("NX_TOUCH_HIDE_BUTTONS", hiddenNames);
                 if (Launcher.writeConfig(configFile(), config)) {
-                    Toast.makeText(ControlsEditor.this, t("Controles guardados", "Controls saved"), Toast.LENGTH_SHORT).show();
+                    Toast.makeText(ControlsEditor.this,
+                            t("Controles guardados y aplicados", "Controls saved and applied"), Toast.LENGTH_SHORT).show();
                     finish();
                 } else {
                     Toast.makeText(ControlsEditor.this, t("No se pudo guardar config.txt", "Could not write config.txt"),
@@ -146,6 +154,7 @@ public class ControlsEditor extends Activity {
     void reset(boolean mirrored) {
         for (int i = 0; i < NAMES.length; i++) pos[i] = DEFAULTS[i].clone();
         if (mirrored) pos[STICK][0] = 1 - pos[STICK][0];
+        hidden = new boolean[NAMES.length];
     }
 
     void parse(String layout) {  // NAME:x,y,r;... (what serialize() writes; the runtime reads the same)
@@ -173,20 +182,39 @@ public class ControlsEditor extends Activity {
         return s.toString();
     }
 
+    void parseHidden(String value) {
+        if (value == null) return;
+        for (String name : value.split(";"))
+            for (int i = 0; i < NAMES.length; i++)
+                if (i != EDIT && NAMES[i].equals(name)) hidden[i] = true;
+    }
+
+    String serializeHidden() {
+        StringBuilder s = new StringBuilder();
+        for (int i = 0; i < NAMES.length; i++) {
+            if (!hidden[i] || i == EDIT) continue;
+            if (s.length() > 0) s.append(';');
+            s.append(NAMES[i]);
+        }
+        return s.toString();
+    }
+
     int dp(int v) { return Math.round(v * getResources().getDisplayMetrics().density); }
 
     final class EditorView extends View {
         final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         int group = -1;
-        float lastX, lastY;
+        int selected = -1;
+        boolean moved;
+        float downX, downY, lastX, lastY;
 
         EditorView(Context c) {
             super(c);
             paint.setTypeface(Typeface.DEFAULT_BOLD);
         }
 
-        float radius(int i) {  // pixels: the stick's ring keeps its size, the buttons follow NX_TOUCH_SIZE
-            return pos[i][2] * (i == STICK ? 1 : sizeScale) * getHeight();
+        float radius(int i) {  // pixels: stick rings keep their size, buttons follow NX_TOUCH_SIZE
+            return pos[i][2] * (i == STICK || i == 17 ? 1 : sizeScale) * getHeight();
         }
 
         boolean touches(int i) {
@@ -205,16 +233,18 @@ public class ControlsEditor extends Activity {
                 float cx = pos[i][0] * w, cy = pos[i][1] * h, r = radius(i);
                 boolean bad = touches(i), held = GROUP[i] == group;
                 paint.setStyle(Paint.Style.FILL);
-                paint.setColor(bad ? Color.argb(150, 230, 0, 18) : Color.argb(held ? 140 : 80, 255, 255, 255));
+                paint.setColor(hidden[i] ? Color.argb(60, 120, 120, 120)
+                        : bad ? Color.argb(150, 230, 0, 18) : Color.argb(held ? 140 : 80, 255, 255, 255));
                 c.drawCircle(cx, cy, r, paint);
                 paint.setStyle(Paint.Style.STROKE);
                 paint.setStrokeWidth(dp(2));
-                paint.setColor(bad ? Color.rgb(255, 60, 60) : Color.argb(220, 255, 255, 255));
+                paint.setColor(hidden[i] ? Color.rgb(255, 80, 90)
+                        : bad ? Color.rgb(255, 60, 60) : Color.argb(220, 255, 255, 255));
                 c.drawCircle(cx, cy, r, paint);
                 paint.setStyle(Paint.Style.FILL);
                 paint.setColor(Color.WHITE);
                 paint.setTextAlign(Paint.Align.CENTER);
-                String label = i == STICK ? t("Stick", "Stick") : LABELS[i];
+                String label = hidden[i] ? "×" : i == STICK ? t("Stick", "Stick") : LABELS[i];
                 paint.setTextSize(i == STICK ? r * 0.35f : r * 0.8f);
                 c.drawText(label, cx, cy - (paint.ascent() + paint.descent()) / 2, paint);
             }
@@ -226,21 +256,28 @@ public class ControlsEditor extends Activity {
             switch (e.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN: {
                     group = -1;
+                    selected = -1;
+                    moved = false;
                     float best = 1e9f;
                     for (int i = 0; i < NAMES.length; i++) {
                         float d = (float) Math.hypot(e.getX() - pos[i][0] * w, e.getY() - pos[i][1] * h) / radius(i);
                         if (d < 1.3f && d < best) {
                             best = d;
                             group = GROUP[i];
+                            selected = i;
                         }
                     }
+                    downX = e.getX();
+                    downY = e.getY();
                     lastX = e.getX();
                     lastY = e.getY();
                     invalidate();
                     return true;
                 }
                 case MotionEvent.ACTION_MOVE: {
-                    if (group < 0) return true;
+                    if (group < 0 || selected < 0) return true;
+                    if (Math.hypot(e.getX() - downX, e.getY() - downY) >= dp(7)) moved = true;
+                    if (!moved) return true;
                     float dx = (e.getX() - lastX) / w, dy = (e.getY() - lastY) / h;
                     // The whole group stays on screen: the move is cut where its first member would leave it.
                     for (int i = 0; i < NAMES.length; i++) {
@@ -259,8 +296,16 @@ public class ControlsEditor extends Activity {
                     invalidate();
                     return true;
                 }
+                case MotionEvent.ACTION_UP: {
+                    if (!moved && selected >= 0 && selected != EDIT) hidden[selected] = !hidden[selected];
+                    group = -1;
+                    selected = -1;
+                    invalidate();
+                    return true;
+                }
                 default:
                     group = -1;
+                    selected = -1;
                     invalidate();
                     return true;
             }

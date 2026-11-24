@@ -69,8 +69,8 @@ constexpr size_t kOverlayMax = 32;  // Overlay.shape[32] in tools/shaders/presen
 
 // The labels' 5x7 glyphs, Overlay.font in overlay.glsl (a uniform block: a constant array indexed per pixel was slow on
 // the Adreno 610). One row per entry, bit 4 = the left column: 0 none, 1 A, 2 B, 3 X, 4 Y, 5 L, 6 R, 7 Z, 8 +, 9 -,
-// 10 up, 11 down, 12 left, 13 right, 14 3, 15..24 the digits 0..9 (the FPS counter).
-const uint32_t kFont[25 * 7] = {
+// 10 up, 11 down, 12 left, 13 right, 14 3, 15..24 digits 0..9, 25 settings.
+const uint32_t kFont[26 * 7] = {
     0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u,
     0x0Eu, 0x11u, 0x11u, 0x1Fu, 0x11u, 0x11u, 0x11u,
     0x1Eu, 0x11u, 0x11u, 0x1Eu, 0x11u, 0x11u, 0x1Eu,
@@ -95,9 +95,10 @@ const uint32_t kFont[25 * 7] = {
     0x06u, 0x08u, 0x10u, 0x1Eu, 0x11u, 0x11u, 0x0Eu,
     0x1Fu, 0x01u, 0x02u, 0x04u, 0x08u, 0x08u, 0x08u,
     0x0Eu, 0x11u, 0x11u, 0x0Eu, 0x11u, 0x11u, 0x0Eu,
-    0x0Eu, 0x11u, 0x11u, 0x0Fu, 0x01u, 0x02u, 0x0Cu
+    0x0Eu, 0x11u, 0x11u, 0x0Fu, 0x01u, 0x02u, 0x0Cu,
+    0x04u, 0x15u, 0x0Eu, 0x11u, 0x0Eu, 0x15u, 0x04u
 };
-constexpr size_t kFontWords = 44 * 4;  // uvec4 font[44]
+constexpr size_t kFontWords = 46 * 4;  // uvec4 font[46]
 constexpr size_t kOverlayBytes = 16 * kOverlayMax + 4 * kFontWords;
 constexpr VkShaderStageFlags kPushStages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 

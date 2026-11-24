@@ -4,6 +4,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
@@ -100,6 +101,21 @@ inline bool ufloat_raw() {
     static const bool raw = std::getenv("NX_R11G11B10_RAW") != nullptr;
     return raw;
 }
+bool native_r11g11b10();  // nvn_caps.cpp
+// NX_R11G11B10_CLAMP=0|1|2|3 (default 1 where R11G11B10F is stored as RGBA16F, 0 elsewhere or with NX_R11G11B10_RAW):
+// 1 clamps the fragment colour outputs of R11G11B10F targets to >= 0 with NaN to 0 (what Maxwell's unsigned float
+// stores); 2 paints those outputs magenta instead, to see which draws produce negative/NaN colour; 3 also disables
+// blending on those targets to test whether blending introduces the artifact (diagnosis only).
+inline uint32_t ufloat_clamp_mode() {
+    static const char* e = std::getenv("NX_R11G11B10_CLAMP");
+    if (e) return e[0] == '3' ? 3u : e[0] == '2' ? 2u : e[0] == '1' ? 1u : 0u;
+    return (!ufloat_raw() && !native_r11g11b10()) ? 1u : 0u;
+}
+inline void clamp_ufloat_clear(VkClearColorValue& value, uint32_t nvn_format) {
+    if (nvn_format != 0x3f || !ufloat_clamp_mode()) return;
+    for (uint32_t c = 0; c < 3; c++)
+        if (!(value.float32[c] >= 0.0f)) value.float32[c] = 0.0f;  // Maxwell's unsigned float clear: negative/NaN -> 0
+}
 inline bool no_a2c_flag() {
     static const bool v = std::getenv("NX_NO_ALPHA_TO_COVERAGE") != nullptr;
     return v;
@@ -189,7 +205,11 @@ bool default_unwritten_inputs(const std::vector<uint32_t>& in, uint32_t location
 uint32_t unwritten_inputs(const ShaderInfo* vs, const ShaderInfo* fs);
 // The code of a stage's module: its SPIR-V with every patch above that applies (`kinds` as patch_int_inputs, or
 // null; `unwritten` as default_unwritten_inputs). `int_inputs` gets whether patch_int_inputs changed it.
-std::vector<uint32_t> patched_spirv(const ShaderInfo* s, const uint8_t* kinds, uint32_t unwritten, bool* int_inputs);
+std::vector<uint32_t> patched_spirv(const ShaderInfo* s, const uint8_t* kinds, uint32_t unwritten, uint32_t ufloat,
+                                    bool* int_inputs);
+// Fragment: the colour outputs at the locations in `locations` (R11G11B10F targets stored as RGBA16F) are written
+// through a clamp (mode 1: rgb >= 0, NaN -> 0) or painted magenta where not >= 0 (mode 2). nvn_spirv_patch.cpp.
+bool clamp_ufloat_outputs(const std::vector<uint32_t>& in, uint32_t locations, uint32_t mode, std::vector<uint32_t>& out);
 
 VkPipeline compute_pipeline(const ShaderInfo* cs, const ProgramLayout& layout);
 

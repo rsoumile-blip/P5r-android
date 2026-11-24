@@ -187,6 +187,9 @@ uint32_t clears_apply(const Targets& t, VkRenderingAttachmentInfo* colors, VkRen
             if (slot[k] >= 0 && colors[slot[k]].imageView) {
                 colors[slot[k]].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
                 colors[slot[k]].clearValue = e.color[k];
+                GpuImage* img = t.colors[k] ? image_of(t.colors[k]) : nullptr;
+                clamp_ufloat_clear(colors[slot[k]].clearValue.color,
+                                   t.views.format[k] ? t.views.format[k] : (img ? img->nvn_format : 0));
                 cleared |= 1u << slot[k];
             }
         if (e.ds && depth.imageView) {
@@ -242,7 +245,9 @@ bool clears_transfer(VkCommandBuffer cb, const Pending& e) {
         uint32_t layer = std::min<uint32_t>(t.views.layer[k], img->layers - 1);
         if (k < 8) {
             VkImageSubresourceRange r{VK_IMAGE_ASPECT_COLOR_BIT, level, 1, layer, 1};
-            p_vkCmdClearColorImage(cb, img->image, VK_IMAGE_LAYOUT_GENERAL, &e.color[k].color, 1, &r);
+            VkClearColorValue value = e.color[k].color;
+            clamp_ufloat_clear(value, t.views.format[k] ? t.views.format[k] : img->nvn_format);
+            p_vkCmdClearColorImage(cb, img->image, VK_IMAGE_LAYOUT_GENERAL, &value, 1, &r);
         } else {
             VkImageSubresourceRange r{e.ds, level, 1, layer, 1};
             p_vkCmdClearDepthStencilImage(cb, img->image, VK_IMAGE_LAYOUT_GENERAL, &e.depth.depthStencil, 1, &r);
@@ -354,6 +359,7 @@ void draw_clear(VkCommandBuffer cb, const Targets& t, const Cmd& c) {
     if (color) {
         a.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, a.colorAttachment = c.n;
         std::memcpy(a.clearValue.color.float32, c.f, 16);
+        clamp_ufloat_clear(a.clearValue.color, t.views.format[c.n] ? t.views.format[c.n] : img->nvn_format);
     } else {
         if ((c.mask & 1) && (img->aspect & VK_IMAGE_ASPECT_DEPTH_BIT)) a.aspectMask |= VK_IMAGE_ASPECT_DEPTH_BIT;
         if ((c.mask >> 8 & 0xFF) && (img->aspect & VK_IMAGE_ASPECT_STENCIL_BIT)) a.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;

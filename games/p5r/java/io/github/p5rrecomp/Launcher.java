@@ -106,6 +106,8 @@ public class Launcher extends Activity {
     TextView historyStatus;
     Button play;
     Button profileButton;
+    TextView deviceRecommendationName;
+    Button deviceRecommendationButton;
     ScrollView launcherScroll;
     final View[] navTargets = new View[6];
     LinearLayout launcherRoot;
@@ -387,6 +389,10 @@ public class Launcher extends Activity {
                 new String[] {"2", "0"},
                 new String[] {"Inteligente (puede faltar algo un instante)", "Desactivada (puede dar tirones con efectos nuevos)"},
                 new String[] {"Smart async (brief pop-in possible)", "Off (may hitch on new effects)"}, 0));
+        options.add(new Option("NX_TEX_AUDIT", "Reparación de texturas de escena", "Scene texture refresh",
+                new String[] {"0", "2"},
+                new String[] {"Desactivada", "Activada (puede usar más CPU)"},
+                new String[] {"Off", "On (may use more CPU)"}, 0));
         options.add(new Option("NX_SHADOWS", "Sombras", "Shadows", new String[] {"0", "1"},
                 new String[] {"Desactivadas", "Activadas"}, new String[] {"Off", "On"}, 0));
         options.add(new Option("NX_MALI_LOW_SHADOWS", "Calidad de sombras", "Shadow quality",
@@ -425,6 +431,9 @@ public class Launcher extends Activity {
                 new String[] {"50", "75", "100", "125", "150", "200", "250"},
                 new String[] {"50%", "75%", "100%", "125%", "150%", "200%", "250%"},
                 new String[] {"50%", "75%", "100%", "125%", "150%", "200%", "250%"}, 2));
+        options.add(new Option("NX_TOUCH_FIXED_STICKS", "Posición de palancas", "Stick position",
+                new String[] {"0", "1"}, new String[] {"Flotante", "Fija"},
+                new String[] {"Floating", "Fixed"}, 0));
         if (!PerformanceProfiles.isProfile(prefs().getString("graphics_profile", PerformanceProfiles.MANUAL)))
             prefs().edit().putString("graphics_profile", PerformanceProfiles.MANUAL).apply();
         setupThermalPacing();
@@ -437,6 +446,7 @@ public class Launcher extends Activity {
         finishTrackedSession();
         refresh();
         refreshHistory();
+        maybeShowDeviceRecommendation();
     }
 
     @Override protected void onDestroy() {
@@ -471,6 +481,8 @@ public class Launcher extends Activity {
         root.addView(subTabBar);
 
         addProfileRow(root);
+        root.getChildAt(root.getChildCount() - 1).setTag("shared");
+        addDeviceRecommendationRow(root);
         root.getChildAt(root.getChildCount() - 1).setTag("shared");
 
         status = new TextView(this);
@@ -555,6 +567,9 @@ public class Launcher extends Activity {
                     if (profiled() && PerformanceProfiles.controls(o.key)) return;
                     o.pick = (o.pick + 1) % o.values.length;
                     value.setText(label(o));
+                    if (prefs().getBoolean(DeviceRecommendations.PREF_ENABLED, false)
+                            && ("RESOLUTION".equals(o.key) || "NX_FPS_CAP".equals(o.key)))
+                        disableRecommendationForManualEdit(o.key, o.values[o.pick]);
                     manualEdit = PerformanceProfiles.MANUAL.equals(profile()) && PerformanceProfiles.controls(o.key);
                     manualEditKey = manualEdit ? o.key : null;
                     save();
@@ -747,7 +762,8 @@ public class Launcher extends Activity {
             }
         });
         root.addView(logsRow);
-        logsRow.setTag(5);
+        logsRow.setTag(3);
+        subSections.put(logsRow, 2);
         navTargets[4] = logsRow;
 
         play = new P5Views.SlashButton(this);
@@ -1075,7 +1091,7 @@ public class Launcher extends Activity {
         if ("NX_STRETCH".equals(key)) return 2;
         if ("NX_FSR".equals(key)) return 1;
         if ("NX_SHOW_FPS".equals(key)) return 2;
-        if ("GRAPHICS".equals(key) || key.contains("CROWD") || key.contains("BLOOM")) return 1;
+        if ("GRAPHICS".equals(key) || "NX_TEX_AUDIT".equals(key) || key.contains("CROWD") || key.contains("BLOOM")) return 1;
         if ("NX_GAMEPAD_LAYOUT".equals(key) || key.contains("SENSITIVITY")) return 1;
         return 0;
     }
@@ -1285,6 +1301,7 @@ public class Launcher extends Activity {
     void refresh() {
         load();
         if (profileButton != null) profileButton.setText(profileLabel());
+        updateDeviceRecommendationRow();
         Option thermalOption = findOption("THERMAL_PACING");
         if (thermalOption != null) thermalOption.pick = prefs().getBoolean("thermal_pacing", true) ? 1 : 0;
         for (Option o : options) {
@@ -1571,6 +1588,10 @@ public class Launcher extends Activity {
             else if ("medium".equals(config.get("GRAPHICS"))) config.put("NX_LOD_BIAS", "0.5");
             else config.remove("NX_LOD_BIAS");
         }
+        if (prefs().getBoolean(DeviceRecommendations.PREF_ENABLED, false)) {
+            DeviceRecommendations.apply(config, !activeDriver().isEmpty());
+            syncOptionsFromConfig();
+        }
         writeConfig(new File(dataDir(), "config.txt"), config);
     }
 
@@ -1610,6 +1631,146 @@ public class Launcher extends Activity {
             }
         });
         root.addView(row);
+    }
+
+    void addDeviceRecommendationRow(LinearLayout root) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, dp(3), 0, dp(3));
+        deviceRecommendationName = new TextView(this);
+        deviceRecommendationName.setTextColor(Color.WHITE);
+        deviceRecommendationName.setTextSize(15);
+        row.addView(deviceRecommendationName, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        deviceRecommendationButton = new Button(this);
+        deviceRecommendationButton.setAllCaps(false);
+        deviceRecommendationButton.setMinWidth(dp(180));
+        row.addView(deviceRecommendationButton);
+        deviceRecommendationButton.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { showDeviceRecommendationDialog(false); }
+        });
+        root.addView(row);
+        updateDeviceRecommendationRow();
+    }
+
+    void updateDeviceRecommendationRow() {
+        if (deviceRecommendationName == null || deviceRecommendationButton == null) return;
+        deviceRecommendationName.setText(Lang.f("Dispositivo: %s", "Device: %s", DeviceRecommendations.displayName()));
+        boolean enabled = prefs().getBoolean(DeviceRecommendations.PREF_ENABLED, false);
+        deviceRecommendationButton.setText(enabled ? t("Ajuste activo", "Recommendation on")
+                : t("Ajuste recomendado", "Recommended setup"));
+    }
+
+    void maybeShowDeviceRecommendation() {
+        String identity = DeviceRecommendations.identity();
+        if (identity.equals(prefs().getString(DeviceRecommendations.PREF_SEEN_ID, "")) || isFinishing()) return;
+        showDeviceRecommendationDialog(true);
+    }
+
+    void showDeviceRecommendationDialog(boolean firstPrompt) {
+        boolean enabled = prefs().getBoolean(DeviceRecommendations.PREF_ENABLED, false);
+        String message = DeviceRecommendations.recommendation(!activeDriver().isEmpty());
+        if (enabled) message += "\n\n" + t("La recomendación está activa. Puedes volver a los ajustes previos desde aquí.",
+                "The recommendation is active. You can restore your previous settings here.");
+        else message += "\n\n" + t("Es opcional y no instala controladores. Puedes cambiarla después.",
+                "This is optional and does not install a driver. You can change it later.");
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(Lang.f("Ajustes para %s", "Settings for %s", DeviceRecommendations.displayName()))
+                .setMessage(message)
+                .setPositiveButton(enabled ? t("Aplicar otra vez", "Apply again") : t("Usar recomendados", "Use recommended"),
+                        new DialogInterface.OnClickListener() {
+                            @Override public void onClick(DialogInterface d, int which) { enableDeviceRecommendation(); }
+                        })
+                .create();
+        if (enabled) {
+            dialog.setButton(AlertDialog.BUTTON_NEUTRAL, t("Desactivar", "Turn off"),
+                    new DialogInterface.OnClickListener() {
+                        @Override public void onClick(DialogInterface d, int which) { disableDeviceRecommendation(); }
+                    });
+            dialog.setButton(AlertDialog.BUTTON_NEGATIVE, t("Cerrar", "Close"),
+                    new DialogInterface.OnClickListener() {
+                        @Override public void onClick(DialogInterface d, int which) { markDeviceRecommendationSeen(); }
+                    });
+        } else {
+            dialog.setButton(AlertDialog.BUTTON_NEGATIVE,
+                    firstPrompt ? t("Mantener ajustes", "Keep current settings") : t("Cerrar", "Close"),
+                    new DialogInterface.OnClickListener() {
+                        @Override public void onClick(DialogInterface d, int which) { markDeviceRecommendationSeen(); }
+                    });
+        }
+        dialog.setOnCancelListener(new DialogInterface.OnCancelListener() {
+            @Override public void onCancel(DialogInterface d) { markDeviceRecommendationSeen(); }
+        });
+        dialog.show();
+    }
+
+    void markDeviceRecommendationSeen() {
+        prefs().edit().putString(DeviceRecommendations.PREF_SEEN_ID, DeviceRecommendations.identity()).apply();
+    }
+
+    void enableDeviceRecommendation() {
+        if (!hasAccess()) {
+            Toast.makeText(this, t("Permite acceso a la carpeta del juego para guardar los ajustes.",
+                    "Allow access to the game folder to save these settings."), Toast.LENGTH_LONG).show();
+            askAccess();
+            return;
+        }
+        markDeviceRecommendationSeen();
+        load();
+        if (!prefs().getBoolean(DeviceRecommendations.PREF_ENABLED, false)) {
+            SharedPreferences.Editor editor = prefs().edit()
+                    .putBoolean(DeviceRecommendations.PREF_ENABLED, true)
+                    .putBoolean(DeviceRecommendations.PREF_PREVIOUS_DRIVER_PRESENT, config.containsKey("NX_SYSTEM_DRIVER"))
+                    .putBoolean(DeviceRecommendations.PREF_PREVIOUS_RESOLUTION_PRESENT, config.containsKey("RESOLUTION"))
+                    .putBoolean(DeviceRecommendations.PREF_PREVIOUS_FPS_PRESENT, config.containsKey("NX_FPS_CAP"));
+            if (config.containsKey("NX_SYSTEM_DRIVER"))
+                editor.putString(DeviceRecommendations.PREF_PREVIOUS_DRIVER_VALUE, config.get("NX_SYSTEM_DRIVER"));
+            if (config.containsKey("RESOLUTION"))
+                editor.putString(DeviceRecommendations.PREF_PREVIOUS_RESOLUTION_VALUE, config.get("RESOLUTION"));
+            if (config.containsKey("NX_FPS_CAP"))
+                editor.putString(DeviceRecommendations.PREF_PREVIOUS_FPS_VALUE, config.get("NX_FPS_CAP"));
+            editor.apply();
+        }
+        save();
+        updateDeviceRecommendationRow();
+        refresh();
+        Toast.makeText(this, t("Ajustes guardados para el próximo inicio del juego.",
+                "Recommended settings saved for the next game launch."), Toast.LENGTH_LONG).show();
+    }
+
+    void disableDeviceRecommendation() {
+        if (!hasAccess()) { askAccess(); return; }
+        load();
+        restoreDeviceRecommendation(config, null, null);
+        prefs().edit().putBoolean(DeviceRecommendations.PREF_ENABLED, false).apply();
+        writeConfig(new File(dataDir(), "config.txt"), config);
+        save();
+        updateDeviceRecommendationRow();
+        refresh();
+    }
+
+    void restoreDeviceRecommendation(Map<String, String> target, String preserveKey, String preserveValue) {
+        restoreRecommendationEntry(target, "RESOLUTION", DeviceRecommendations.PREF_PREVIOUS_RESOLUTION_PRESENT,
+                DeviceRecommendations.PREF_PREVIOUS_RESOLUTION_VALUE);
+        restoreRecommendationEntry(target, "NX_FPS_CAP", DeviceRecommendations.PREF_PREVIOUS_FPS_PRESENT,
+                DeviceRecommendations.PREF_PREVIOUS_FPS_VALUE);
+        restoreRecommendationEntry(target, "NX_SYSTEM_DRIVER", DeviceRecommendations.PREF_PREVIOUS_DRIVER_PRESENT,
+                DeviceRecommendations.PREF_PREVIOUS_DRIVER_VALUE);
+        if (preserveKey != null) target.put(preserveKey, preserveValue);
+    }
+
+    void restoreRecommendationEntry(Map<String, String> target, String configKey, String presentPref, String valuePref) {
+        if (prefs().getBoolean(presentPref, false)) target.put(configKey, prefs().getString(valuePref, ""));
+        else target.remove(configKey);
+    }
+
+    void disableRecommendationForManualEdit(String key, String value) {
+        if (!hasAccess()) return;
+        load();
+        restoreDeviceRecommendation(config, key, value);
+        prefs().edit().putBoolean(DeviceRecommendations.PREF_ENABLED, false).apply();
+        writeConfig(new File(dataDir(), "config.txt"), config);
+        updateDeviceRecommendationRow();
     }
 
     void chooseNextProfile() {
@@ -1974,15 +2135,19 @@ public class Launcher extends Activity {
     }
 
     String optionDescription(String key) {
+        if ("NX_TOUCH_FIXED_STICKS".equals(key))
+            return t("Fija las dos palancas táctiles en su sitio; ambas siguen respondiendo al tacto.",
+                    "Keep both touch sticks anchored in place while they remain fully usable.");
+        if (key.startsWith("NX_TOUCH")) return t("Ajusta los controles en pantalla", "Adjust the on-screen controls");
         if ("RESOLUTION".equals(key)) return t("Resolución de renderizado del juego", "Game render resolution");
         if ("NX_HUD_1080".equals(key)) return t("Nitidez de menús y textos", "Menu and text sharpness");
         if ("NX_FSR".equals(key)) return t("Escalado para mejorar la nitidez", "Upscaling for a sharper image");
         if ("NX_FPS_CAP".equals(key)) return t("Objetivo de fotogramas", "Frame-rate target");
         if ("THERMAL_PACING".equals(key)) return t("Reduce el límite al calentarse; conserva los gráficos", "Lowers the frame cap when hot; keeps graphics unchanged");
         if ("NX_ASYNC_PIPELINES".equals(key)) return t("Puede reducir tirones con efectos nuevos", "Can reduce hitches with new effects");
+        if ("NX_TEX_AUDIT".equals(key)) return t("Vuelve a cargar texturas de escena que cambian; puede corregir parpadeos o ausencias", "Refreshes changed scene textures; may fix flicker or missing textures");
         if ("NX_SHADOWS".equals(key)) return t("Desactivarlas puede mejorar el rendimiento", "Turning shadows off may improve performance");
         if ("NX_SHOW_FPS".equals(key)) return t("Muestra los FPS durante el juego", "Show FPS while playing");
-        if (key.startsWith("NX_TOUCH")) return t("Ajusta los controles en pantalla", "Adjust the on-screen controls");
         if ("GRAPHICS".equals(key)) return t("Calidad de texturas del juego", "Game texture quality");
         if ("NX_NO_CROWD".equals(key)) return t("Reduce personajes de fondo", "Reduce background crowds");
         if ("NX_DISABLE_BLOOM".equals(key)) return t("Efectos de brillo", "Glow post-processing effect");

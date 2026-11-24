@@ -86,19 +86,20 @@ VkShaderStageFlags stage_bit(ShaderStage s) {
 
 // `kinds`: per vertex input location, 0 float or the integer kind of its attribute format (vertex_int_kind).
 // `unwritten`: fragment input locations the vertex stage does not write (default_unwritten_inputs).
-VkShaderModule module_of(const ShaderInfo* s, const uint8_t* kinds = nullptr, uint32_t unwritten = 0) {
-    static std::map<std::tuple<const ShaderInfo*, std::string, uint32_t>, VkShaderModule> cache;
+VkShaderModule module_of(const ShaderInfo* s, const uint8_t* kinds = nullptr, uint32_t unwritten = 0,
+                         uint32_t ufloat = 0) {
+    static std::map<std::tuple<const ShaderInfo*, std::string, uint32_t, uint32_t>, VkShaderModule> cache;
     // The integer-vertex-input patch (skinned models' bone indices; without it Metal refuses every character's
     // pipeline, DEBUG.md #25/#26). NX_INT_ATTRIBS=0 turns it off.
     static const char* int_env = std::getenv("NX_INT_ATTRIBS");
     static const bool off = int_env && int_env[0] == '0';
     std::string k = kinds && !off ? std::string(reinterpret_cast<const char*>(kinds), 16) : std::string(16, '\0');
-    auto& m = cache[{s, k, unwritten}];
+    auto& m = cache[{s, k, unwritten, ufloat}];
     if (!m) {
         const uint64_t module_t0 = plat::monotonic_ns();
         bool is_patched = false;
         const uint8_t* int_kinds = k != std::string(16, '\0') ? reinterpret_cast<const uint8_t*>(k.data()) : nullptr;
-        std::vector<uint32_t> code = patched_spirv(s, int_kinds, unwritten, &is_patched);
+        std::vector<uint32_t> code = patched_spirv(s, int_kinds, unwritten, ufloat, &is_patched);
         if (s->stage == ShaderStage::Vertex && uw_on()) {  // NX_ULTRAWIDE: gl_Position.x * spec constant 0
             std::vector<uint32_t> scaled;
             if (patch_x_scale(code, scaled)) code.swap(scaled);
@@ -823,7 +824,7 @@ PipelineKey canonical_key(const PipelineKey& in) {
             k.blend[i].target = 0;
         }
     }
-    k.ufloat_colors = dc.color_blend_equation ? 0u : (in.ufloat_colors & (n >= 32 ? ~0u : (1u << n) - 1));
+    k.ufloat_colors = (dc.color_blend_equation && !ufloat_clamp_mode()) ? 0u : (in.ufloat_colors & (n >= 32 ? ~0u : (1u << n) - 1));
     k.depth_format = in.depth_format;
     if (in.depth_format != VK_FORMAT_UNDEFINED) {
         const bool keep_depth_func = !dc.depth_compare_op && (in.depth.depth_test || dc.depth_test_enable);
@@ -896,7 +897,8 @@ std::unique_ptr<PipeBuild> prepare_graphics_pipeline(const PipelineKey& key, con
         auto& st = stages[nstages++];
         st.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         st.stage = VkShaderStageFlagBits(stage_bit(s->stage));
-        st.module = module_of(s, s == key.vs ? int_kinds : nullptr, s == key.fs ? unwritten : 0);
+        st.module = module_of(s, s == key.vs ? int_kinds : nullptr, s == key.fs ? unwritten : 0,
+                              s == key.fs && ufloat_clamp_mode() ? key.ufloat_colors : 0);
         st.pName = "main";
         if (s == key.vs && key.uw_x > 0) {  // NX_ULTRAWIDE: constant 0 of the patched vertex module
             static VkSpecializationMapEntry entry{0, 0, sizeof(float)};
@@ -991,9 +993,11 @@ std::unique_ptr<PipeBuild> prepare_graphics_pipeline(const PipelineKey& key, con
 
     VkPipelineColorBlendAttachmentState(&att)[8] = B.att;
     for (uint32_t k = 0; k < key.color_count; k++) {
-        att[k].blendEnable = (!dc.color_blend_enable && key.color.blend_enable[k]) ? VK_TRUE : VK_FALSE;
+        const bool ufloat = (key.ufloat_colors >> k & 1) && !ufloat_raw();
+        att[k].blendEnable = (!dc.color_blend_enable && key.color.blend_enable[k] && !(ufloat && ufloat_clamp_mode() == 3))
+                                 ? VK_TRUE
+                                 : VK_FALSE;
         if (!dc.color_blend_equation) {
-            const bool ufloat = (key.ufloat_colors >> k & 1) && !ufloat_raw();
             const VkColorBlendEquationEXT eq = vk_blend_equation(key.blend[k], ufloat);
             att[k].srcColorBlendFactor = eq.srcColorBlendFactor;
             att[k].dstColorBlendFactor = eq.dstColorBlendFactor;

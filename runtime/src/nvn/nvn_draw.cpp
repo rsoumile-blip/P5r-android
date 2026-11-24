@@ -906,7 +906,11 @@ void set_dynamic(VkCommandBuffer cb, const VkViewport& vp, const VkRect2D& sc, c
     if (cnt > 0) {
         if (dc.color_blend_enable) {
             VkBool32 en[8];
-            for (uint32_t k = 0; k < cnt; k++) en[k] = s.color.blend_enable[k] ? VK_TRUE : VK_FALSE;
+            for (uint32_t k = 0; k < cnt; k++) {
+                const bool bypass_ufloat_blend = (s_cached_ufloat_colors >> k & 1) && !ufloat_raw() &&
+                                                  ufloat_clamp_mode() == 3;
+                en[k] = s.color.blend_enable[k] && !bypass_ufloat_blend ? VK_TRUE : VK_FALSE;
+            }
             if (differs(b.blend_enable_count != cnt || std::memcmp(b.blend_enable, en, cnt * sizeof(VkBool32)) != 0)) {
                 dc.set_color_blend_enable(cb, 0, cnt, en);
                 std::memcpy(b.blend_enable, en, cnt * sizeof(VkBool32));

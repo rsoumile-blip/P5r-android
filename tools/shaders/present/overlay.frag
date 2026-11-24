@@ -10,7 +10,7 @@ layout(location = 0) out vec4 color;
 
 // Glyph `g` at q (cells: x 0..5 left to right, y 0..7 top to bottom): 1 inside a lit cell.
 float glyph(uint g, vec2 q) {
-    if (g == 0u || g >= 25u || q.x < 0.0 || q.y < 0.0 || q.x >= 5.0 || q.y >= 7.0) return 0.0;
+    if (g == 0u || g >= 26u || q.x < 0.0 || q.y < 0.0 || q.x >= 5.0 || q.y >= 7.0) return 0.0;
     uint f = g * 7u + uint(q.y);
     uint row = ov.font[f >> 2u][f & 3u];
     return float((row >> (4u - uint(q.x))) & 1u);

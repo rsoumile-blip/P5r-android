@@ -75,7 +75,8 @@ std::vector<Latch> g_latched;
 constexpr uint64_t kMinHoldNs = 25'000'000;  // 25 ms (~1.5 frames at 60 fps) so rapid taps never coalesce into a hold
 
 void release_touch(const Touch& t, uint64_t now) {
-    if (t.button && now < t.down_ns + kMinHoldNs) g_latched.push_back({t.button, t.down_ns + kMinHoldNs});
+    if (t.button && t.button != kTouchEdit && now < t.down_ns + kMinHoldNs)
+        g_latched.push_back({t.button, t.down_ns + kMinHoldNs});
 }
 float g_w = 1, g_h = 1;
 bool g_gamepad = false;  // the last input came from a controller: the drawn touch controls hide
@@ -178,9 +179,36 @@ uint64_t touch_button(float x, float y) {
     return right ? kA : kB;
 }
 
+bool within_stick_zone(float x, float y, float sx, float sy, float radius, float aspect) {
+    return std::hypot((x - sx) * aspect, y - sy) <= radius * 1.45f;
+}
+
+void open_controls_editor(android_app* app) {
+    if (!app || !app->activity || !app->activity->vm || !app->activity->clazz) return;
+    JNIEnv* env = nullptr;
+    bool detach = false;
+    jint status = app->activity->vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
+    if (status == JNI_EDETACHED) {
+        if (app->activity->vm->AttachCurrentThread(&env, nullptr) != JNI_OK || !env) return;
+        detach = true;
+    } else if (status != JNI_OK || !env) {
+        return;
+    }
+    jclass activity_class = env->GetObjectClass(app->activity->clazz);
+    jmethodID open = activity_class
+                         ? env->GetMethodID(activity_class, "openControlsEditorFromGame", "()V")
+                         : nullptr;
+    if (open) env->CallVoidMethod(app->activity->clazz, open);
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        __android_log_print(ANDROID_LOG_WARN, "p5r", "touch editor: could not open the Android editor activity");
+    }
+    if (detach) app->activity->vm->DetachCurrentThread();
+}
+
 }  // namespace
 
-int32_t on_input(android_app*, AInputEvent* e) {
+int32_t on_input(android_app* app, AInputEvent* e) {
     std::lock_guard lk(g_in);
     int32_t type = AInputEvent_getType(e);
     int32_t src = AInputEvent_getSource(e);
@@ -258,10 +286,34 @@ int32_t on_input(android_app*, AInputEvent* e) {
         size_t drawn = 0;
         touch_buttons(drawn);
         if (drawn) {  // a drawn layout (touch_layout.cpp): its buttons first, the rest of the left half is the stick
-            uint64_t b = touch_hit(x / g_w, y / g_h, g_w / g_h);
-            bool left = !b && touch_stick_side(x / g_w);
-            Stick stick = b ? kNoStick : left ? kLeftStick : touch_right_stick() ? kRightStick : kNoStick;
-            if (b || stick) g_touches.push_back({id, x, y, x, y, stick, b, now});
+            const float nx = x / g_w, ny = y / g_h, aspect = g_w / g_h;
+            uint64_t b = touch_hit(nx, ny, aspect);
+            Stick stick = kNoStick;
+            float x0 = x, y0 = y;
+            if (!b && touch_stick_side(nx)) {
+                if (!touch_fixed_sticks()) {
+                    stick = kLeftStick;
+                } else {
+                    float sx, sy, sr;
+                    touch_stick_rest(sx, sy, sr);
+                    if (within_stick_zone(nx, ny, sx, sy, sr, aspect)) {
+                        stick = kLeftStick;
+                        x0 = sx * g_w, y0 = sy * g_h;
+                    }
+                }
+            } else if (!b && touch_right_stick() && nx >= 0.5f) {
+                if (!touch_fixed_sticks()) {
+                    stick = kRightStick;
+                } else {
+                    float sx, sy, sr;
+                    touch_camera_stick_rest(sx, sy, sr);
+                    if (within_stick_zone(nx, ny, sx, sy, sr, aspect)) {
+                        stick = kRightStick;
+                        x0 = sx * g_w, y0 = sy * g_h;
+                    }
+                }
+            }
+            if (b || stick) g_touches.push_back({id, x0, y0, x, y, stick, b, now});
         } else {
             bool left = x < g_w * 0.5f;
             g_touches.push_back({id, x, y, x, y, left ? kLeftStick : kNoStick,
@@ -274,6 +326,11 @@ int32_t on_input(android_app*, AInputEvent* e) {
         g_touches.erase(std::remove_if(g_touches.begin(), g_touches.end(),
                                        [&](const Touch& t) {
                                            if (!all && t.id != id) return false;
+                                           if (t.button == kTouchEdit && kind != AMOTION_EVENT_ACTION_CANCEL &&
+                                               std::hypot(t.x - t.x0, t.y - t.y0) <= g_h * 0.04f) {
+                                               open_controls_editor(app);
+                                               return true;
+                                           }
                                            release_touch(t, now);
                                            return true;
                                        }),
@@ -296,7 +353,7 @@ int32_t on_input(android_app*, AInputEvent* e) {
                 if (t.id == id) {
                     t.x = AMotionEvent_getX(e, k);
                     t.y = AMotionEvent_getY(e, k);
-                    if (t.stick == kNoStick) {
+                    if (t.stick == kNoStick && t.button != kTouchEdit) {
                         t.button = drawn ? touch_hit(t.x / g_w, t.y / g_h, g_w / g_h) : touch_button(t.x, t.y);
                     }
                 }
@@ -327,6 +384,7 @@ void read_pad(PadState& p) {
                     g_latched.end());
     for (const auto& l : g_latched) p.buttons |= l.button;
     for (const auto& t : g_touches) {
+        if (t.button == kTouchEdit) continue;
         float dx = (t.x - t.x0) / radius, dy = (t.y - t.y0) / radius;
         if (t.stick == kLeftStick) {
             float sx = dx * stick_sens();
@@ -355,7 +413,7 @@ size_t touch_overlay(OverlayShape* out, size_t max) {
     const TouchButton* b = touch_buttons(n);
     if (!n) return 0;
     std::lock_guard lk(g_in);
-    if (g_gamepad || !touch_enabled() || touch_hidden()) return 0;
+    if (g_gamepad || !touch_enabled()) return 0;
     // Dimmed to a third while nobody touches the screen (cutscenes, videos), back at once on the next touch.
     const bool idle = g_touches.empty() && monotonic_ns() - g_last_touch_ns > kTouchIdleNs;
     const float shade = touch_opacity_scale() * (idle ? 0.35f : 1.0f);
@@ -368,24 +426,41 @@ size_t touch_overlay(OverlayShape* out, size_t max) {
         held |= t.button;
     }
     for (const auto& l : g_latched) held |= l.button;
-    for (size_t i = 0; i < n && k < max; i++)
-        out[k++] = {b[i].x, b[i].y, b[i].r, std::min(1.0f, (held & b[i].button ? 0.5f : 0.2f) * shade), b[i].label};
+    const bool hide_gameplay_buttons = touch_hidden();
+    for (size_t i = 0; i < n && k < max; i++) {
+        if (!b[i].visible || (hide_gameplay_buttons && b[i].button != kTouchEdit)) continue;
+        const float button_shade = b[i].button == kTouchEdit ? 1.0f : shade;
+        out[k++] = {b[i].x, b[i].y, b[i].r,
+                    std::min(1.0f, (held & b[i].button ? 0.55f : b[i].button == kTouchEdit ? 0.42f : 0.2f) * button_shade),
+                    b[i].label};
+    }
+    if (hide_gameplay_buttons) return k;  // leave the editor button reachable even with the game controls hidden
     // A stick under the thumb: its ring where the finger went down and the knob where it is now.
-    auto draw_stick = [&](const Touch& t) {
+    auto draw_stick = [&](const Touch& t, float r) {
         if (k + 2 > max) return;
-        float r = 0.12f, dx = (t.x - t.x0) / g_h, dy = (t.y - t.y0) / g_h;
+        float dx = (t.x - t.x0) / g_h, dy = (t.y - t.y0) / g_h;
         float len = std::hypot(dx, dy), s = len > r ? r / len : 1.f;
         out[k++] = {t.x0 / g_w, t.y0 / g_h, r, std::min(1.0f, 0.14f * shade)};
         out[k++] = {(t.x0 / g_h + dx * s) * g_h / g_w, t.y0 / g_h + dy * s, 0.055f, std::min(1.0f, 0.45f * shade)};
     };
     if (stick) {
-        draw_stick(*stick);
+        float sx, sy, sr;
+        touch_stick_rest(sx, sy, sr);
+        if (touch_stick_visible()) draw_stick(*stick, touch_fixed_sticks() ? sr : 0.12f);
     } else if (k < max) {  // where the stick goes
         float sx, sy, sr;
         touch_stick_rest(sx, sy, sr);
-        out[k++] = {sx, sy, sr, std::min(1.0f, 0.08f * shade)};
+        if (touch_stick_visible()) out[k++] = {sx, sy, sr, std::min(1.0f, 0.08f * shade)};
     }
-    if (camera) draw_stick(*camera);
+    if (camera) {
+        float sx, sy, sr;
+        touch_camera_stick_rest(sx, sy, sr);
+        if (touch_camera_stick_visible()) draw_stick(*camera, touch_fixed_sticks() ? sr : 0.12f);
+    } else if (touch_fixed_sticks() && touch_right_stick() && k < max) {
+        float sx, sy, sr;
+        touch_camera_stick_rest(sx, sy, sr);
+        if (touch_camera_stick_visible()) out[k++] = {sx, sy, sr, std::min(1.0f, 0.08f * shade)};
+    }
     return k;
 }
 

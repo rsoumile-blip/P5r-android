@@ -2,6 +2,7 @@ package io.github.p5rrecomp;
 
 import android.app.NativeActivity;
 import android.os.SystemClock;
+import android.content.Intent;
 import android.view.KeyEvent;
 import android.widget.Toast;
 
@@ -10,6 +11,15 @@ public final class P5RGameActivity extends NativeActivity {
     private static final long BACK_CONFIRM_MS = 2500;
     private long lastBackPress;
     private Toast backToast;
+
+    /** Open the native touch layout editor when its in-game gear button is tapped. */
+    public void openControlsEditorFromGame() {
+        runOnUiThread(new Runnable() {
+            @Override public void run() {
+                startActivity(new Intent(P5RGameActivity.this, ControlsEditor.class));
+            }
+        });
+    }
 
     @Override public boolean dispatchKeyEvent(KeyEvent event) {
         if (event.getKeyCode() == KeyEvent.KEYCODE_BACK) {

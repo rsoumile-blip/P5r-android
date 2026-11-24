@@ -11,6 +11,7 @@
 #include <cstring>
 #include <map>
 #include <mutex>
+#include <set>
 #include <string>
 #include <unordered_set>
 
@@ -406,6 +407,192 @@ bool default_unwritten_inputs(const std::vector<uint32_t>& in, uint32_t location
     return true;
 }
 
+// ---- R11G11B10F colour outputs on the RGBA16F fallback -------------------------------------------------------------
+// Maxwell stores negative and NaN results in R11G11B10F (an unsigned float) as 0; RGBA16F keeps them, and a tone-map or
+// blur downstream turns one NaN/negative channel into cyan or white (foliage fringes: alpha ~0 texels). Every masked
+// vec4 float Output at a Location in `locations` becomes a Private variable (the shader's own stores and loads, access
+// chains included, are unchanged); before each return of the entry function a new Output variable at that Location
+// gets rgb = (v >= 0 ? v : 0), alpha as is. NaN fails the comparison, so it becomes 0. mode 2 writes magenta instead
+// where any component is not >= 0 (NX_R11G11B10_CLAMP=2: shows the draws that make such values).
+bool clamp_ufloat_outputs(const std::vector<uint32_t>& in, uint32_t locations, uint32_t mode, std::vector<uint32_t>& out) {
+    constexpr uint32_t kEntry = 15, kTypeBool = 20, kTypeFloat = 22, kConst = 43, kConstComp = 44, kConstNull = 46,
+                       kFunction = 54, kFunctionEnd = 56, kLoad = 61, kStore = 62, kCopyMem = 63, kName = 5,
+                       kConstruct = 80, kExtract = 81, kInsert = 82, kSelect = 169, kAll = 155, kFGe = 190,
+                       kReturn = 253, kPrivate = 6, kOutput = 3, kFragment = 4, kDecComponent = 31, kDecIndex = 32;
+    if (in.size() < 5 || !locations || !mode) return false;
+    std::vector<Inst> insts;
+    for (size_t i = 5; i < in.size();) {
+        uint32_t len = in[i] >> 16;
+        if (!len || i + len > in.size()) return false;
+        insts.push_back({i, in[i] & 0xffff, len});
+        i += len;
+    }
+    std::map<uint32_t, uint32_t> location, width;                  // variable -> Location; scalar type -> bits
+    std::map<uint32_t, std::pair<uint32_t, uint32_t>> vec, ptr;    // vector type -> (component, count); pointer -> (storage, pointee)
+    std::set<uint32_t> floats, skip;                               // float types; variables with Index/Component
+    uint32_t bool_id = 0, entry_id = 0;
+    size_t first_function = SIZE_MAX;
+    bool fragment = false;
+    for (const Inst& n : insts) {
+        const uint32_t* w = &in[n.at];
+        if (n.op == kEntry && n.len >= 3) { fragment |= w[1] == kFragment; entry_id = w[2]; }
+        else if (n.op == OpDecorate && n.len >= 4 && w[2] == DecorationLocation) location[w[1]] = w[3];
+        else if (n.op == OpDecorate && n.len >= 3 && (w[2] == kDecIndex || (w[2] == kDecComponent && n.len >= 4 && w[3])))
+            skip.insert(w[1]);
+        else if (n.op == OpTypeFloat && n.len == 3) width[w[1]] = w[2], floats.insert(w[1]);
+        else if (n.op == kTypeBool && n.len == 2) bool_id = w[1];
+        else if (n.op == OpTypeVector && n.len == 4) vec[w[1]] = {w[2], w[3]};
+        else if (n.op == OpTypePointer && n.len == 4) ptr[w[1]] = {w[2], w[3]};
+        else if (n.op == kFunction && first_function == SIZE_MAX) first_function = n.at;
+    }
+    if (!fragment || first_function == SIZE_MAX) return false;
+
+    struct Target { uint32_t id, ptr_type, type, comp, nv, loc, priv_type, zero; };
+    std::vector<Target> targets;
+    std::map<uint32_t, uint32_t> priv_ptr, zero_of;  // pointee -> Private pointer type; vec type -> null constant
+    uint32_t bound = in[3];
+    std::vector<uint32_t> globals_a, globals_b;      // before the first target variable; before the first function
+    auto private_to = [&](uint32_t pointee) {
+        auto& id = priv_ptr[pointee];
+        if (!id) {
+            id = bound++;
+            globals_a.insert(globals_a.end(), {(4u << 16) | OpTypePointer, id, kPrivate, pointee});
+        }
+        return id;
+    };
+    size_t first_var = SIZE_MAX;
+    for (const Inst& n : insts) {
+        const uint32_t* w = &in[n.at];
+        if (n.op != OpVariable || n.len != 4 || w[3] != kOutput) continue;
+        auto l = location.find(w[2]);
+        if (l == location.end() || l->second >= 32 || !(locations >> l->second & 1) || skip.count(w[2])) continue;
+        auto p = ptr.find(w[1]);
+        if (p == ptr.end()) continue;
+        auto v = vec.find(p->second.second);
+        if (v == vec.end() || v->second.second != 4 || !floats.count(v->second.first) || width[v->second.first] != 32)
+            continue;
+        Target t{w[2], w[1], p->second.second, v->second.first, 0, l->second, 0, 0};
+        targets.push_back(t);
+        first_var = std::min(first_var, n.at);
+    }
+    if (targets.empty()) return false;
+    std::set<uint32_t> ids;
+    for (Target& t : targets) {
+        t.nv = bound++;
+        t.priv_type = private_to(t.type);
+        private_to(t.comp);  // for the access chains
+        auto& z = zero_of[t.type];
+        if (!z) {
+            z = bound++;
+            globals_a.insert(globals_a.end(), {(3u << 16) | kConstNull, t.type, z});
+        }
+        t.zero = z;
+        ids.insert(t.id);
+    }
+    // Every use of an output must be a load, a store of a value, or an access chain from it.
+    std::set<uint32_t> chains;
+    for (const Inst& n : insts) {
+        const uint32_t* w = &in[n.at];
+        if (n.op == OpVariable || n.op == OpDecorate || n.op == kEntry || n.op == kName) continue;
+        if ((n.op == OpAccessChain || n.op == OpInBoundsAccessChain) && n.len >= 4 && (ids.count(w[3]) || chains.count(w[3]))) {
+            auto p = ptr.find(w[1]);
+            bool ok = p != ptr.end() && p->second.first == kOutput;
+            if (ok) {
+                bool is_comp = false;
+                for (const Target& t : targets) is_comp |= p->second.second == t.comp;
+                ok = is_comp;
+            }
+            if (!ok) return false;
+            chains.insert(w[2]);
+            continue;
+        }
+        if (n.op == kStore && n.len >= 3) {
+            if (ids.count(w[2]) || chains.count(w[2])) return false;  // a pointer stored as a value
+            continue;
+        }
+        if (n.op == kLoad) continue;
+        for (uint32_t id : ids)
+            if (other_pointer_use(w, n.op, n.len, id, false) || (n.op == kCopyMem && (w[1] == id || w[2] == id))) return false;
+        for (uint32_t id : chains)
+            if (other_pointer_use(w, n.op, n.len, id, false)) return false;
+    }
+
+    // Types and constants the return code needs, before the first function (after every existing declaration).
+    uint32_t bvec4 = 0;
+    for (auto& [id, v] : vec)
+        if (bool_id && v.first == bool_id && v.second == 4) bvec4 = id;
+    if (!bool_id) bool_id = bound++, globals_b.insert(globals_b.end(), {(2u << 16) | kTypeBool, bool_id});
+    if (!bvec4) bvec4 = bound++, globals_b.insert(globals_b.end(), {(4u << 16) | OpTypeVector, bvec4, bool_id, 4u});
+    uint32_t magenta = 0;
+    if (mode == 2) {
+        const Target& t0 = targets[0];
+        uint32_t f0 = bound++, f1 = bound++;
+        magenta = bound++;
+        globals_b.insert(globals_b.end(), {(4u << 16) | kConst, t0.comp, f0, 0u, (4u << 16) | kConst, t0.comp, f1, 0x3f800000u,
+                                           (7u << 16) | kConstComp, t0.type, magenta, f1, f0, f1, f1});
+    }
+    for (Target& t : targets) globals_b.insert(globals_b.end(), {(4u << 16) | OpVariable, t.ptr_type, t.nv, kOutput});
+
+    const bool interface_private = in[1] >= 0x10400;
+    out.assign(in.begin(), in.begin() + 5);
+    bool in_entry = false;
+    for (const Inst& n : insts) {
+        if (n.at == first_var) out.insert(out.end(), globals_a.begin(), globals_a.end());
+        if (n.at == first_function) out.insert(out.end(), globals_b.begin(), globals_b.end());
+        std::vector<uint32_t> w(in.begin() + n.at, in.begin() + n.at + n.len);
+        auto target = [&](uint32_t id) -> Target* {
+            for (Target& t : targets) if (t.id == id) return &t;
+            return nullptr;
+        };
+        if (n.op == kEntry) {
+            size_t k = 3;
+            while (k < w.size() && (w[k] >> 24) != 0) k++;
+            std::vector<uint32_t> e(w.begin(), w.begin() + std::min(k + 1, w.size()));
+            for (size_t j = k + 1; j < w.size(); j++) {
+                if (Target* t = target(w[j]); t && !interface_private) e.push_back(t->nv);
+                else e.push_back(w[j]);
+            }
+            if (interface_private) for (const Target& t : targets) e.push_back(t.nv);
+            e[0] = uint32_t(e.size()) << 16 | kEntry;
+            w = std::move(e);
+        } else if (n.op == OpDecorate && n.len >= 4 && w[2] == DecorationLocation && target(w[1])) {
+            w[1] = target(w[1])->nv;  // the Location moves to the new Output variable
+        } else if (n.op == OpDecorate && n.len >= 4 && w[2] == kDecComponent && target(w[1])) {
+            continue;  // (0): the default
+        } else if (n.op == OpVariable && n.len == 4 && w[3] == kOutput && target(w[2])) {
+            Target* t = target(w[2]);
+            w = {(5u << 16) | OpVariable, t->priv_type, t->id, kPrivate, t->zero};
+        } else if ((n.op == OpAccessChain || n.op == OpInBoundsAccessChain) && n.len >= 4 && chains.count(w[2])) {
+            w[1] = priv_ptr[ptr[w[1]].second];
+        } else if (n.op == kFunction) {
+            in_entry = w[2] == entry_id;
+        } else if (n.op == kFunctionEnd) {
+            in_entry = false;
+        } else if (n.op == kReturn && in_entry) {
+            for (const Target& t : targets) {
+                uint32_t v = bound++, ok = bound++, r = bound++;
+                out.insert(out.end(), {(4u << 16) | OpLoad, t.type, v, t.id,  //
+                                       (5u << 16) | kFGe, bvec4, ok, v, t.zero});
+                if (mode == 2) {
+                    uint32_t all = bound++, b = bound++;
+                    out.insert(out.end(), {(4u << 16) | kAll, bool_id, all, ok,  //
+                                           (7u << 16) | kConstruct, bvec4, b, all, all, all, all,  //
+                                           (6u << 16) | kSelect, t.type, r, b, v, magenta});
+                } else {
+                    uint32_t s = bound++, a = bound++;
+                    out.insert(out.end(), {(6u << 16) | kSelect, t.type, s, ok, v, t.zero,  //
+                                           (5u << 16) | kExtract, t.comp, a, v, 3u,  //
+                                           (6u << 16) | kInsert, t.type, r, a, s, 3u});
+                }
+                out.insert(out.end(), {(3u << 16) | kStore, t.nv, r});
+            }
+        }
+        out.insert(out.end(), w.begin(), w.end());
+    }
+    out[3] = bound;
+    return true;
+}
+
 // ---- vertex outputs start at zero ----------------------------------------------------------------------------------
 // A vertex shader may write an output only on some paths, or only some of its components: the rest is undefined in
 // SPIR-V. On Maxwell it reads back as whatever the register held (zero in practice); Mesa ANV leaves the garbage of
@@ -783,7 +970,8 @@ bool inject_fp16_relaxed_precision_mali(const std::vector<uint32_t>& in, std::ve
     return true;
 }
 
-std::vector<uint32_t> patched_spirv(const ShaderInfo* s, const uint8_t* kinds, uint32_t unwritten, bool* int_inputs) {
+std::vector<uint32_t> patched_spirv(const ShaderInfo* s, const uint8_t* kinds, uint32_t unwritten, uint32_t ufloat,
+                                    bool* int_inputs) {
     std::vector<uint32_t> code = s->spirv, next;  // each pass reads `code` and leaves its result in `next`
     if (strip_interlock(code, next)) code.swap(next);
     bool is_int = kinds && patch_int_inputs(code, kinds, next);
@@ -799,6 +987,15 @@ std::vector<uint32_t> patched_spirv(const ShaderInfo* s, const uint8_t* kinds, u
         if (ok) code.swap(next);
         log("nvn/vk: shader %s: inputs %#x not written by the vertex stage%s", s->hash.c_str(), unwritten,
             ok ? " read (0, 0, 0, 1)" : ", left as they are");
+    }
+    if (ufloat && s->stage == ShaderStage::Fragment) {  // R11G11B10F targets kept as RGBA16F (nvn_caps.cpp)
+        const uint32_t mode = ufloat_clamp_mode();
+        if (mode && clamp_ufloat_outputs(code, ufloat, mode, next)) {
+            code.swap(next);
+            static int logged = 0;
+            if (logged++ < 12) log("nvn/vk: shader %s: R11G11B10F outputs %#x %s", s->hash.c_str(), ufloat,
+                                   mode == 2 ? "painted magenta where not >= 0" : "clamped (negative/NaN -> 0)");
+        }
     }
     if (clamp_uniform_indices(code, next, nullptr)) code.swap(next);
     if (s->stage == ShaderStage::Fragment)
