@@ -39,7 +39,7 @@ public class ControlsEditor extends Activity {
             {0.135f, 0.31f, 0.048f}, {0.135f, 0.49f, 0.048f}, {0.085f, 0.40f, 0.048f}, {0.185f, 0.40f, 0.048f},
             {0.150f, 0.76f, 0.120f},
             {0.055f, 0.58f, 0.046f}, {0.740f, 0.82f, 0.046f},
-            {0.700f, 0.45f, 0.120f}, {0.680f, 0.07f, 0.045f}};
+            {0.700f, 0.45f, 0.120f}, {0.620f, 0.07f, 0.045f}};
     static final int[] GROUP = {0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 7, 7, 7, 8, 9, 10, 11, 12};
     static final int STICK = 14;
     static final int EDIT = 18;

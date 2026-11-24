@@ -106,8 +106,6 @@ public class Launcher extends Activity {
     TextView historyStatus;
     Button play;
     Button profileButton;
-    TextView deviceRecommendationName;
-    Button deviceRecommendationButton;
     ScrollView launcherScroll;
     final View[] navTargets = new View[6];
     LinearLayout launcherRoot;
@@ -446,7 +444,6 @@ public class Launcher extends Activity {
         finishTrackedSession();
         refresh();
         refreshHistory();
-        maybeShowDeviceRecommendation();
     }
 
     @Override protected void onDestroy() {
@@ -481,8 +478,6 @@ public class Launcher extends Activity {
         root.addView(subTabBar);
 
         addProfileRow(root);
-        root.getChildAt(root.getChildCount() - 1).setTag("shared");
-        addDeviceRecommendationRow(root);
         root.getChildAt(root.getChildCount() - 1).setTag("shared");
 
         status = new TextView(this);
@@ -567,9 +562,6 @@ public class Launcher extends Activity {
                     if (profiled() && PerformanceProfiles.controls(o.key)) return;
                     o.pick = (o.pick + 1) % o.values.length;
                     value.setText(label(o));
-                    if (prefs().getBoolean(DeviceRecommendations.PREF_ENABLED, false)
-                            && ("RESOLUTION".equals(o.key) || "NX_FPS_CAP".equals(o.key)))
-                        disableRecommendationForManualEdit(o.key, o.values[o.pick]);
                     manualEdit = PerformanceProfiles.MANUAL.equals(profile()) && PerformanceProfiles.controls(o.key);
                     manualEditKey = manualEdit ? o.key : null;
                     save();
@@ -885,7 +877,7 @@ public class Launcher extends Activity {
                 haptic(v); if (section >= 0) { playTabSound(); showLauncherSection(section); } else if (play != null) play.performClick();
             }});
         }
-        TextView version = new TextView(this); version.setText("v0.5.14");
+        TextView version = new TextView(this); version.setText("v0.5.15");
         version.setTextColor(0xFFB8A6AD); version.setTextSize(10); version.setPadding(0,dp(8),0,0);
         side.addView(version);
         return side;
@@ -1301,7 +1293,6 @@ public class Launcher extends Activity {
     void refresh() {
         load();
         if (profileButton != null) profileButton.setText(profileLabel());
-        updateDeviceRecommendationRow();
         Option thermalOption = findOption("THERMAL_PACING");
         if (thermalOption != null) thermalOption.pick = prefs().getBoolean("thermal_pacing", true) ? 1 : 0;
         for (Option o : options) {
@@ -1588,11 +1579,7 @@ public class Launcher extends Activity {
             else if ("medium".equals(config.get("GRAPHICS"))) config.put("NX_LOD_BIAS", "0.5");
             else config.remove("NX_LOD_BIAS");
         }
-        if (prefs().getBoolean(DeviceRecommendations.PREF_ENABLED, false)) {
-            DeviceRecommendations.apply(config, !activeDriver().isEmpty());
-            syncOptionsFromConfig();
-        }
-        writeConfig(new File(dataDir(), "config.txt"), config);
+writeConfig(new File(dataDir(), "config.txt"), config);
     }
 
     String profile() { return prefs().getString("graphics_profile", PerformanceProfiles.MANUAL); }
@@ -1631,146 +1618,6 @@ public class Launcher extends Activity {
             }
         });
         root.addView(row);
-    }
-
-    void addDeviceRecommendationRow(LinearLayout root) {
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(0, dp(3), 0, dp(3));
-        deviceRecommendationName = new TextView(this);
-        deviceRecommendationName.setTextColor(Color.WHITE);
-        deviceRecommendationName.setTextSize(15);
-        row.addView(deviceRecommendationName, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-        deviceRecommendationButton = new Button(this);
-        deviceRecommendationButton.setAllCaps(false);
-        deviceRecommendationButton.setMinWidth(dp(180));
-        row.addView(deviceRecommendationButton);
-        deviceRecommendationButton.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) { showDeviceRecommendationDialog(false); }
-        });
-        root.addView(row);
-        updateDeviceRecommendationRow();
-    }
-
-    void updateDeviceRecommendationRow() {
-        if (deviceRecommendationName == null || deviceRecommendationButton == null) return;
-        deviceRecommendationName.setText(Lang.f("Dispositivo: %s", "Device: %s", DeviceRecommendations.displayName()));
-        boolean enabled = prefs().getBoolean(DeviceRecommendations.PREF_ENABLED, false);
-        deviceRecommendationButton.setText(enabled ? t("Ajuste activo", "Recommendation on")
-                : t("Ajuste recomendado", "Recommended setup"));
-    }
-
-    void maybeShowDeviceRecommendation() {
-        String identity = DeviceRecommendations.identity();
-        if (identity.equals(prefs().getString(DeviceRecommendations.PREF_SEEN_ID, "")) || isFinishing()) return;
-        showDeviceRecommendationDialog(true);
-    }
-
-    void showDeviceRecommendationDialog(boolean firstPrompt) {
-        boolean enabled = prefs().getBoolean(DeviceRecommendations.PREF_ENABLED, false);
-        String message = DeviceRecommendations.recommendation(!activeDriver().isEmpty());
-        if (enabled) message += "\n\n" + t("La recomendación está activa. Puedes volver a los ajustes previos desde aquí.",
-                "The recommendation is active. You can restore your previous settings here.");
-        else message += "\n\n" + t("Es opcional y no instala controladores. Puedes cambiarla después.",
-                "This is optional and does not install a driver. You can change it later.");
-        AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle(Lang.f("Ajustes para %s", "Settings for %s", DeviceRecommendations.displayName()))
-                .setMessage(message)
-                .setPositiveButton(enabled ? t("Aplicar otra vez", "Apply again") : t("Usar recomendados", "Use recommended"),
-                        new DialogInterface.OnClickListener() {
-                            @Override public void onClick(DialogInterface d, int which) { enableDeviceRecommendation(); }
-                        })
-                .create();
-        if (enabled) {
-            dialog.setButton(AlertDialog.BUTTON_NEUTRAL, t("Desactivar", "Turn off"),
-                    new DialogInterface.OnClickListener() {
-                        @Override public void onClick(DialogInterface d, int which) { disableDeviceRecommendation(); }
-                    });
-            dialog.setButton(AlertDialog.BUTTON_NEGATIVE, t("Cerrar", "Close"),
-                    new DialogInterface.OnClickListener() {
-                        @Override public void onClick(DialogInterface d, int which) { markDeviceRecommendationSeen(); }
-                    });
-        } else {
-            dialog.setButton(AlertDialog.BUTTON_NEGATIVE,
-                    firstPrompt ? t("Mantener ajustes", "Keep current settings") : t("Cerrar", "Close"),
-                    new DialogInterface.OnClickListener() {
-                        @Override public void onClick(DialogInterface d, int which) { markDeviceRecommendationSeen(); }
-                    });
-        }
-        dialog.setOnCancelListener(new DialogInterface.OnCancelListener() {
-            @Override public void onCancel(DialogInterface d) { markDeviceRecommendationSeen(); }
-        });
-        dialog.show();
-    }
-
-    void markDeviceRecommendationSeen() {
-        prefs().edit().putString(DeviceRecommendations.PREF_SEEN_ID, DeviceRecommendations.identity()).apply();
-    }
-
-    void enableDeviceRecommendation() {
-        if (!hasAccess()) {
-            Toast.makeText(this, t("Permite acceso a la carpeta del juego para guardar los ajustes.",
-                    "Allow access to the game folder to save these settings."), Toast.LENGTH_LONG).show();
-            askAccess();
-            return;
-        }
-        markDeviceRecommendationSeen();
-        load();
-        if (!prefs().getBoolean(DeviceRecommendations.PREF_ENABLED, false)) {
-            SharedPreferences.Editor editor = prefs().edit()
-                    .putBoolean(DeviceRecommendations.PREF_ENABLED, true)
-                    .putBoolean(DeviceRecommendations.PREF_PREVIOUS_DRIVER_PRESENT, config.containsKey("NX_SYSTEM_DRIVER"))
-                    .putBoolean(DeviceRecommendations.PREF_PREVIOUS_RESOLUTION_PRESENT, config.containsKey("RESOLUTION"))
-                    .putBoolean(DeviceRecommendations.PREF_PREVIOUS_FPS_PRESENT, config.containsKey("NX_FPS_CAP"));
-            if (config.containsKey("NX_SYSTEM_DRIVER"))
-                editor.putString(DeviceRecommendations.PREF_PREVIOUS_DRIVER_VALUE, config.get("NX_SYSTEM_DRIVER"));
-            if (config.containsKey("RESOLUTION"))
-                editor.putString(DeviceRecommendations.PREF_PREVIOUS_RESOLUTION_VALUE, config.get("RESOLUTION"));
-            if (config.containsKey("NX_FPS_CAP"))
-                editor.putString(DeviceRecommendations.PREF_PREVIOUS_FPS_VALUE, config.get("NX_FPS_CAP"));
-            editor.apply();
-        }
-        save();
-        updateDeviceRecommendationRow();
-        refresh();
-        Toast.makeText(this, t("Ajustes guardados para el próximo inicio del juego.",
-                "Recommended settings saved for the next game launch."), Toast.LENGTH_LONG).show();
-    }
-
-    void disableDeviceRecommendation() {
-        if (!hasAccess()) { askAccess(); return; }
-        load();
-        restoreDeviceRecommendation(config, null, null);
-        prefs().edit().putBoolean(DeviceRecommendations.PREF_ENABLED, false).apply();
-        writeConfig(new File(dataDir(), "config.txt"), config);
-        save();
-        updateDeviceRecommendationRow();
-        refresh();
-    }
-
-    void restoreDeviceRecommendation(Map<String, String> target, String preserveKey, String preserveValue) {
-        restoreRecommendationEntry(target, "RESOLUTION", DeviceRecommendations.PREF_PREVIOUS_RESOLUTION_PRESENT,
-                DeviceRecommendations.PREF_PREVIOUS_RESOLUTION_VALUE);
-        restoreRecommendationEntry(target, "NX_FPS_CAP", DeviceRecommendations.PREF_PREVIOUS_FPS_PRESENT,
-                DeviceRecommendations.PREF_PREVIOUS_FPS_VALUE);
-        restoreRecommendationEntry(target, "NX_SYSTEM_DRIVER", DeviceRecommendations.PREF_PREVIOUS_DRIVER_PRESENT,
-                DeviceRecommendations.PREF_PREVIOUS_DRIVER_VALUE);
-        if (preserveKey != null) target.put(preserveKey, preserveValue);
-    }
-
-    void restoreRecommendationEntry(Map<String, String> target, String configKey, String presentPref, String valuePref) {
-        if (prefs().getBoolean(presentPref, false)) target.put(configKey, prefs().getString(valuePref, ""));
-        else target.remove(configKey);
-    }
-
-    void disableRecommendationForManualEdit(String key, String value) {
-        if (!hasAccess()) return;
-        load();
-        restoreDeviceRecommendation(config, key, value);
-        prefs().edit().putBoolean(DeviceRecommendations.PREF_ENABLED, false).apply();
-        writeConfig(new File(dataDir(), "config.txt"), config);
-        updateDeviceRecommendationRow();
     }
 
     void chooseNextProfile() {

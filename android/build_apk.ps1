@@ -13,8 +13,17 @@ $sdk = if ($env:ANDROID_HOME) { $env:ANDROID_HOME } elseif (Test-Path "C:\Androi
 # apksigner and d8 need a JDK: JAVA_HOME, else Android Studio's own.
 if (-not $env:JAVA_HOME -and (Test-Path "C:\Program Files\Android\Android Studio\jbr")) { $env:JAVA_HOME = "C:\Program Files\Android\Android Studio\jbr" }
 if ($env:JAVA_HOME) { $env:PATH = "$env:JAVA_HOME\bin;$env:PATH" }
-$cmakeDir = Get-ChildItem "$sdk\cmake" -Directory -ErrorAction SilentlyContinue | Select-Object -Last 1
+$cmakeDir = Get-ChildItem "$sdk\cmake" -Directory -ErrorAction SilentlyContinue |
+    Where-Object { try { [version]$_.Name -ge [version]'3.25' } catch { $false } } |
+    Sort-Object { [version]$_.Name } | Select-Object -Last 1
 if ($cmakeDir) { $env:PATH = "$($cmakeDir.FullName)\bin;$env:PATH" }
+else {
+    $systemCmake = Get-Command cmake -ErrorAction SilentlyContinue
+    if (-not $systemCmake) { throw "CMake 3.25 or newer is required. Install it or add it to PATH." }
+    $cmakeVersion = (& $systemCmake.Source --version | Select-Object -First 1) -replace '^cmake version ', ''
+    if ([version]$cmakeVersion -lt [version]'3.25') { throw "CMake 3.25 or newer is required; found $cmakeVersion." }
+    $env:PATH = "$(Split-Path $systemCmake.Source);$env:PATH"
+}
 $ndk = "$sdk\ndk\28.2.13676358"
 $bt = "$sdk\build-tools\35.0.0"
 $jar = "$sdk\platforms\android-35\android.jar"
@@ -116,7 +125,8 @@ if (Test-Path $java) {
 $apk.Dispose()
 
 & "$bt\zipalign.exe" -f -p 4 "$out\base.apk" "$out\aligned.apk"
-& "$bt\apksigner.bat" sign --ks "$env:USERPROFILE\.android\debug.keystore" --ks-pass pass:android --key-pass pass:android `
+& "$bt\apksigner.bat" sign --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true `
+    --ks "$env:USERPROFILE\.android\debug.keystore" --ks-pass pass:android --key-pass pass:android `
     --out "$out\$Game.apk" "$out\aligned.apk"
 if ($LASTEXITCODE) { throw "apksigner failed" }
 $size = [math]::Round((Get-Item "$out\$Game.apk").Length / 1MB, 1)

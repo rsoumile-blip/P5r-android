@@ -171,6 +171,12 @@ int paced_target(uint64_t period, int used) {
     const int cap = cap_fps(), lo = min_fps();
     static double debt = 0, expect = 0;
     static int slow_streak = 0;
+    static int field_target = 0, field_cap = 0;
+    static int scene_target = 0, scene_candidate = 0, scene_direction = 0, scene_streak = 0, scene_cap = 0;
+    if (field_cap != cap) field_target = 0, field_cap = cap;
+    if (!g_field_scene || g_scene) field_target = 0;
+    if (scene_cap != cap) scene_target = scene_candidate = scene_direction = scene_streak = 0, scene_cap = cap;
+    if (!g_scene) scene_target = scene_candidate = scene_direction = scene_streak = 0;
     const double raw_s = double(period) / kTicks;
     const bool is_slow = raw_s > 1.25 / double(cap);
     slow_streak = is_slow ? (slow_streak + 1) : 0;
@@ -187,9 +193,40 @@ int paced_target(uint64_t period, int used) {
     if (g_field_scene && !g_scene) {  // only the cap, a half or a third of it: the nearest step
         const int a = cap, b = cap / 2, c = cap / 3;
         const double s = step * cap;  // in steps of the cap
-        return s < 1.5 ? a : s < 2.5 ? b : c;
+        // Keep a field scene from visibly alternating between 30/15/10 on frame-time noise around a threshold.
+        // Use a small dead band when moving back up, while still dropping promptly when sustained load worsens.
+        if (field_target == 0) field_target = s < 1.5 ? a : s < 2.5 ? b : c;
+        else if (field_target == a) {
+            if (s >= 1.65) field_target = b;
+        } else if (field_target == b) {
+            if (s < 1.35) field_target = a;
+            else if (s >= 2.65) field_target = c;
+        } else if (field_target == c && s < 2.35) {
+            field_target = b;
+        }
+        return field_target;
     }
-    return std::clamp(int(1.0 / step + 0.5), lo, cap);
+    const int candidate = std::clamp(int(1.0 / step + 0.5), lo, cap);
+    if (g_scene) {
+        // Ignore one-frame timing spikes in scripted scenes. Change the target only after three sustained frames
+        // in the same direction, and ignore one-FPS noise around the current target.
+        if (!scene_target) scene_target = candidate;
+        const int delta = candidate - scene_target;
+        const int direction = delta < -1 ? -1 : delta > 1 ? 1 : 0;
+        if (!direction) {
+            scene_candidate = scene_direction = scene_streak = 0;
+        } else {
+            if (direction != scene_direction) scene_streak = 0;
+            scene_direction = direction;
+            scene_candidate = candidate;
+            if (++scene_streak >= 3) {
+                scene_target = scene_candidate;
+                scene_candidate = scene_direction = scene_streak = 0;
+            }
+        }
+        return scene_target;
+    }
+    return candidate;
 }
 
 // The game clock. The engine's loop (main+fe75ac) times each frame with the system tick, clamps it to the frame
