@@ -117,7 +117,7 @@ int affinity_mode() {
     static const int m = [] {
         const char* e = std::getenv("NX_AFFINITY");
         if (e) return std::atoi(e);
-        return 0;  // Let Android schedule by default; NX_AFFINITY opts into core pinning for A/B tests.
+        return 2;  // Default to the previous Android fast-core placement; 0 remains available for A/B testing.
     }();
     return m;
 }
